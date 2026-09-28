@@ -32,6 +32,9 @@ from typing import Any, Iterable
 
 import yaml
 
+from framework.architecture import ArchError, Architecture
+from framework.architecture import load as load_arch
+
 from tools.implement.errors import StateError
 
 STATE_ROOT = Path("docs/implement")
@@ -580,32 +583,140 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_dependers_of(args: argparse.Namespace) -> int:
-    """List modules whose STATE declares an upstream dependency on this capability.
+def _provider_of(arch: Architecture, capability: str) -> tuple[str, str] | None:
+    """(module, contract) that publishes `capability`, or None if no one does.
 
-    NOTE: cross-module dependency declarations live in
-    architecture/modules/<M>/module.yaml, not STATE.yaml. This subcommand
-    scans STATE files only as a quick check that no downstream module
-    is currently building on a capability that is not yet fully_approved.
-    The dispatcher uses the framework's graph + STATE to combine both
-    views before launching developer.
+    Asked of the architecture rather than guessed from the id. The old
+    `dependers-of` took the text before the first dot as the module name, so
+    `series.get` reported a module called `series` -- which does not exist;
+    the provider is `market-data`.
     """
-    target_module, _, target_cap = args.capability.partition(".")
+    for cname, contract in sorted(arch.contracts.items()):
+        if not contract.has_capability(capability):
+            continue
+        owner = arch.module_for_contract(cname)
+        if owner is not None:
+            return owner.name, cname
+    return None
+
+
+def _upstream_states(
+    arch: Architecture, root: Path, uses: Iterable[str]
+) -> list[tuple[str, str, str]]:
+    """(capability, provider module, state) for each declared upstream use.
+
+    Only `fully_approved` is consumable, so anything else -- including a
+    capability the provider has not registered at all -- is a red gate.
+    """
+    rows: list[tuple[str, str, str]] = []
+    for cap in sorted(set(uses)):
+        found = _provider_of(arch, cap)
+        if found is None:
+            rows.append((cap, "(no provider)", "undeclared"))
+            continue
+        provider, _contract = found
+        rec = load_state(provider, root).capabilities.get(cap)
+        rows.append((cap, provider, rec.state if rec else "unregistered"))
+    return rows
+
+
+def cmd_dependers_of(args: argparse.Namespace) -> int:
+    """List the modules that declare a dependency on this capability.
+
+    Both halves come from the architecture: the provider is the module that
+    publishes the contract owning the capability id, and the dependers are
+    the modules whose module.yaml `uses:` it. STATE is then layered on top,
+    so the dispatcher can see which dependers have actually started.
+    """
+    arch = load_arch()
     root = Path(args.root) if args.root else STATE_ROOT
-    hits: list[str] = []
-    for state_path in root.glob("*/STATE.yaml"):
-        rec = load_state(state_path.parent.name, root)
-        if args.capability in rec.capabilities:
-            hits.append(state_path.parent.name)
+    found = _provider_of(arch, args.capability)
+    if found is None:
+        raise StateError(
+            f"no contract in the architecture provides capability "
+            f"{args.capability!r}; it is not declared anywhere"
+        )
+    provider, contract = found
+
+    dependers: list[dict[str, str]] = []
+    for mod in sorted(arch.modules.values(), key=lambda m: m.name):
+        if mod.name == provider:
+            continue
+        dep = mod.dependency_on(contract)
+        if dep is None or args.capability not in dep.uses:
+            continue
+        rec = load_state(mod.name, root).capabilities.get(args.capability)
+        dependers.append(
+            {
+                "module": mod.name,
+                "reason": dep.reason or "(none declared)",
+                "state_here": rec.state if rec else "not-owned",
+            }
+        )
+    own = load_state(provider, root).capabilities.get(args.capability)
     yaml.safe_dump(
         {
             "capability": args.capability,
-            "owning_module": target_module or "(unknown)",
-            "registered_in": hits,
+            "owning_module": provider,
+            "contract": contract,
+            "state": own.state if own else "unregistered",
+            "declared_dependers": dependers,
         },
         sys.stdout,
         sort_keys=False,
     )
+    return 0
+
+
+def cmd_upstream(args: argparse.Namespace) -> int:
+    """The green/red upstream gate the dispatcher has to check by hand.
+
+    The architecture declares upstream use at module granularity
+    (`depends_on[].uses`), not per capability, so this reports what the
+    architecture actually declares. `--upstream` narrows the set when the
+    dispatcher knows which specific capabilities a given Card consumes;
+    without it the gate is deliberately the wider, safe one.
+    """
+    arch = load_arch()
+    root = Path(args.root) if args.root else STATE_ROOT
+    try:
+        mod = arch.module(args.module)
+    except ArchError as exc:
+        raise StateError(str(exc)) from exc
+
+    target = f"{args.module}/{args.capability}" if args.capability else args.module
+    if args.upstream:
+        uses: list[str] = list(args.upstream)
+        granularity = "explicit (--upstream)"
+    else:
+        uses = [cap for dep in mod.depends_on for cap in dep.uses]
+        granularity = "module-level declared (depends_on[].uses)"
+
+    if not uses:
+        _print(
+            f"upstream gate for {target}: green. this module declares no "
+            f"upstream capability use, so there is nothing to wait for."
+        )
+        return 0
+
+    rows = _upstream_states(arch, root, uses)
+    red = [r for r in rows if r[2] != "fully_approved"]
+    _print(
+        f"upstream gate for {target} [{granularity}] -- "
+        f"{len(rows) - len(red)}/{len(rows)} consumable"
+    )
+    for cap, provider, state in rows:
+        mark = "green" if state == "fully_approved" else "red"
+        _print(f"  [{mark:5}] {provider:22} {cap:34} {state}")
+    if red:
+        _print(
+            f"RED: {len(red)} upstream capabilit{'y' if len(red) == 1 else 'ies'} "
+            f"not fully_approved. Only fully_approved is consumable. Do not "
+            f"spawn developer. An MVP upstream is red, not a warning: reopen "
+            f"it with `retry <module> <cap> --mode full` or wait for approval."
+        )
+        return 1
+    _print("green: every declared upstream is fully_approved.")
     return 0
 
 
@@ -667,9 +778,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser(
         "dependers-of",
-        help="list modules that have this capability in their STATE",
+        help="list the modules that declare a dependency on this capability",
     )
     sp.add_argument("capability")
+
+    sp = sub.add_parser(
+        "upstream",
+        help="green/red upstream gate for a module or capability",
+    )
+    sp.add_argument("module")
+    sp.add_argument("capability", nargs="?")
+    sp.add_argument(
+        "--upstream",
+        action="append",
+        default=[],
+        metavar="CAP",
+        help="check this capability id instead of the module's declared uses; repeatable",
+    )
 
     return p
 
@@ -683,6 +808,7 @@ _HANDLERS = {
     "abandon": cmd_abandon,
     "show": cmd_show,
     "dependers-of": cmd_dependers_of,
+    "upstream": cmd_upstream,
 }
 
 

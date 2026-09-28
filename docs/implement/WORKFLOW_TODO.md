@@ -107,9 +107,23 @@ Still open from the same review (P1, not started):
       renames it to `.design-blocker.resolved.md` — a rename, not a delete,
       so the reasoning stays readable and the lift is a recorded act. `retry`
       is deliberately ungated so a blocker cannot deadlock its own work.
-- [ ] `dependers-of` cannot answer its own question; the dispatcher's
-      YELLOW/RED upstream gate has no tool. `archctl depends` already reports
-      `[OK]` / `[?]` per dependency and is the missing primitive.
+- [x] The upstream gate has a tool now. `dependers-of` could not answer its
+      own question — it took the text before the first dot of a capability id
+      as the module name, so `series.get` reported a module called `series`
+      (which does not exist; the provider is `market-data`) and found zero
+      dependers as a result. It now resolves the provider from the
+      architecture and lists the modules whose `module.yaml` actually
+      `uses:` the capability, with their declared reason.
+      `state upstream <module> [<cap>]` is the gate the dispatcher used to
+      have to perform by hand: it reads the module's declared
+      `depends_on[].uses`, resolves each id to its real provider, and
+      cross-references STATE, printing green/red per capability and exiting
+      nonzero on any red. Only `fully_approved` is green — `unregistered`
+      included, since a capability nobody has worked on is not consumable
+      either. Because the architecture declares upstream use per module and
+      not per capability, the default is the wider safe reading; `--upstream
+      <cap.id>` narrows it when a Card knows better, and the output says
+      which granularity it used.
 - [x] The four review scores were three spellings; the real split was two
       surfaces. Inside the Review Record the names are
       `contract_conformance / boundary / test_coverage /

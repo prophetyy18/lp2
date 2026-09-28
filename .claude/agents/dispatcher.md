@@ -29,16 +29,34 @@ Owner intent
 
 For each capability about to be dispatched:
 
-1. **Upstream gate.** Read `architecture/modules/<downstream>/module.yaml`
-   `depends_on` and cross-reference with `docs/implement/<upstream>/STATE.yaml`.
-   The gate is binary:
+1. **Upstream gate.** Run
+
+   ```bash
+   python -m tools.implement.state upstream <module> [<capability>] [--upstream <cap.id>]
+   ```
+
+   It reads the module's declared `depends_on[].uses` from
+   `module.yaml`, resolves each capability to the module that actually
+   publishes it, and cross-references `docs/implement/<upstream>/STATE.yaml`.
+   Exit 0 means green. The gate is binary:
      - `fully_approved` → GREEN. Go ahead.
      - anything else — `pending`, `mvp_developed`, `changes_requested`,
-       `abandoned` → RED. **Refuse to spawn developer** and surface to
-       Owner which upstream capability is blocking and in what state.
+       `abandoned`, or `unregistered` → RED. **Refuse to spawn developer**
+       and surface to Owner which upstream capability is blocking and in
+       what state.
    An `mvp_developed` upstream is RED, not a warning. MVP output is not
    consumable by another module; if the downstream genuinely needs it, the
    Owner reopens the upstream with `retry <module> <cap> --mode full`.
+
+   The architecture declares upstream use per *module*, not per capability,
+   so the default check is the whole declared set — the wider, safe reading.
+   When you know which specific capabilities this Card consumes, narrow it
+   with `--upstream <cap.id>` (repeatable) so one capability is not held up
+   by an unrelated sibling's upstream.
+
+   To see who a capability blocks, use
+   `python -m tools.implement.state dependers-of <capability>`, which names
+   the provider and every module whose `module.yaml` declares it.
 
 2. **Capability Card is current.** Check `docs/implement/<module>/<cap>.card.md`
    exists; if not, route to module-designer first.

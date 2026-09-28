@@ -591,5 +591,124 @@ class ModuleStateAggregationTests(unittest.TestCase):
                 self.assertIn(label, {m.value for m in ModuleState})
 
 
+class CrossModuleGateTests(unittest.TestCase):
+    """`upstream` and `dependers-of` read the real architecture, not STATE guesses."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _run(self, *argv: str) -> tuple[int, str]:
+        from tools.implement import state
+
+        import contextlib
+        import io
+
+        err, out = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+                rc = state.main(list(argv))
+        except SystemExit as exc:
+            rc = int(exc.code or 0)
+        return rc, err.getvalue() + out.getvalue()
+
+    def _set_upstream(self, module: str, cap: str, st: str) -> None:
+        from tools.implement.state import CapabilityRecord, save_state
+
+        rec = load_state(module, self.root)
+        rec.capabilities[cap] = CapabilityRecord(state=st, mode="full")
+        save_state(rec, self.root)
+
+    # --- dependers-of ------------------------------------------------------
+
+    def test_dependers_of_resolves_the_provider_from_the_architecture(self) -> None:
+        """The old version split on the first dot and invented a module.
+
+        `series.get` -> a module called `series`, which does not exist. The
+        provider is market-data, so dependers-of could never list one.
+        """
+        import yaml
+
+        rc, out = self._run("--root", str(self.root), "dependers-of", "series.get")
+        self.assertEqual(rc, 0)
+        data = yaml.safe_load(out)
+        self.assertEqual(data["owning_module"], "market-data")
+        self.assertEqual(data["contract"], "market-data-api")
+        self.assertNotEqual(data["owning_module"], "series")
+
+    def test_dependers_of_lists_the_modules_that_use_it(self) -> None:
+        import yaml
+
+        _, out = self._run("--root", str(self.root), "dependers-of", "series.get")
+        data = yaml.safe_load(out)
+        names = {d["module"] for d in data["declared_dependers"]}
+        self.assertIn("backtest", names)
+        self.assertIn("pricing", names)
+        self.assertNotIn("market-data", names)  # never its own depender
+
+    def test_dependers_of_rejects_a_capability_nobody_provides(self) -> None:
+        rc, out = self._run("--root", str(self.root), "dependers-of", "not.a.cap")
+        self.assertEqual(rc, 1)
+        self.assertIn("not declared anywhere", out)
+
+    # --- the upstream gate -------------------------------------------------
+
+    def test_upstream_is_green_for_a_module_with_no_dependencies(self) -> None:
+        rc, out = self._run("--root", str(self.root), "upstream", "market-data")
+        self.assertEqual(rc, 0)
+        self.assertIn("green", out)
+
+    def test_upstream_is_red_when_the_upstream_is_unregistered(self) -> None:
+        rc, out = self._run("--root", str(self.root), "upstream", "backtest")
+        self.assertEqual(rc, 1)
+        self.assertIn("series.get", out)
+        self.assertIn("unregistered", out)
+
+    def test_upstream_is_green_only_when_every_upstream_is_fully_approved(self) -> None:
+        for cap in ("series.get", "series.calendar"):
+            self._set_upstream("market-data", cap, "fully_approved")
+        for cap in ("position.mark", "pricing.quote"):
+            self._set_upstream("pricing", cap, "fully_approved")
+        rc, out = self._run("--root", str(self.root), "upstream", "backtest")
+        self.assertEqual(rc, 0)
+        self.assertIn("4/4 consumable", out)
+
+    def test_upstream_is_red_with_an_mvp_upstream(self) -> None:
+        """An MVP is not consumable, so it is red -- never a pass-through."""
+        for cap in ("position.mark", "pricing.quote"):
+            self._set_upstream("pricing", cap, "fully_approved")
+        self._set_upstream("market-data", "series.get", "mvp_developed")
+        self._set_upstream("market-data", "series.calendar", "fully_approved")
+        rc, out = self._run("--root", str(self.root), "upstream", "backtest")
+        self.assertEqual(rc, 1)
+        self.assertIn("mvp_developed", out)
+        self.assertIn("retry <module> <cap> --mode full", out)
+
+    def test_upstream_is_red_with_a_changes_requested_upstream(self) -> None:
+        self._set_upstream("market-data", "series.get", "changes_requested")
+        rc, out = self._run("--root", str(self.root), "upstream", "backtest")
+        self.assertEqual(rc, 1)
+        self.assertIn("changes_requested", out)
+
+    def test_upstream_flag_narrows_the_declared_set(self) -> None:
+        """Module-level is the safe default; a Card knows better."""
+        self._set_upstream("market-data", "series.get", "fully_approved")
+        rc, out = self._run(
+            "--root", str(self.root), "upstream", "backtest", "backtest.run",
+            "--upstream", "series.get",
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("1/1 consumable", out)
+        self.assertNotIn("series.calendar", out)
+
+    def test_upstream_rejects_an_unknown_module(self) -> None:
+        rc, out = self._run("--root", str(self.root), "upstream", "ghost")
+        self.assertEqual(rc, 1)
+        self.assertIn("ghost", out)
+
+
 if __name__ == "__main__":
     unittest.main()

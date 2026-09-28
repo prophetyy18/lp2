@@ -194,6 +194,12 @@ cannot deadlock the work it is blocking.
      chooses `approve / changes / abandon`. In MVP mode, Owner reads the
      Manifest result and chooses `accept / changes / abandon`.
 
+Both transitions are recorded by the state CLI and neither is a hand-edit:
+`mark-approved` validates an APPROVED Review Record, `mark-changes`
+validates a CHANGES_REQUESTED one plus its reason codes, and `mark-mvp`
+validates a Manifest with a `## discovery` section. All three refuse while
+a design blocker for the capability is open.
+
 Promote mode skips the Card gate and dispatches reviewer on the existing
 implementation before the completion gate.
 
@@ -237,6 +243,8 @@ Those are separate surfaces; this file only defines how agents work.
   - "What may this module depend on?" → `python -m framework.architecture.cli depends <module>`
   - "Who is affected if X changes?" → `python -m framework.architecture.cli impact <contract>`
   - "What is the state of capability X?" → `python -m tools.implement.state show <module> <cap>`
+  - "May I start this capability?" → `python -m tools.implement.state upstream <module> [<cap>]` (exit 0 = green)
+  - "Who does capability X block?" → `python -m tools.implement.state dependers-of <cap>`
   - "Register an approved Capability Card" → `python -m tools.implement.state register <module> <cap> --mode <full|mvp>`
   - "Does module M violate boundaries?" → `python -m tools.check_imports <module>`
   - "Did this run write outside its module?" → `python -m tools.implement.scope <module> --capability <cap> --base <commit>`
