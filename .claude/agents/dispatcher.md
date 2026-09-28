@@ -94,11 +94,20 @@ every uncommitted change in the tree as if this run had made it.
     Do not change STATE before the Owner decides.
   - On Owner approval of an `APPROVED` verdict, call
     `python -m tools.implement.state mark-approved <module> <cap>
-    --review docs/implement/<module>/<cap>.review.md`.
+    --review docs/implement/<module>/<cap>.review.md
+    --manifest docs/implement/<module>/<cap>.manifest.md`.
   - On Owner request for changes, call `mark-changes` with the same
-    `--review`; the CLI rejects a Record with no reason codes. When the
-    Owner asks to continue the revision, call `retry` and re-dispatch
-    developer with the Review Record's reason codes.
+    `--review` and `--manifest`; the CLI rejects a Record with no reason
+    codes. When the Owner asks to continue the revision, call `retry` and
+    re-dispatch developer with the Review Record's reason codes.
+
+Both commands need **both** artifacts, and the CLI enforces three
+consistency rules that catch a stale or fictional pass. It refuses a
+Review Record older than the Manifest it reviews; it refuses when the
+module's declared `source:` tree holds no `.py` or `tests/` holds no
+`tests/test_<module>*.py`. If a refusal fires, that is a real signal, not
+a CLI nuisance: report it to Owner with the command's message instead of
+re-running it or hand-editing STATE.
   - On abandonment, call `abandon --review <record>` if the reviewer
     returned an `ABANDON` verdict, and plain `abandon` if this is Owner's
     decision alone. Pass `--review` whenever a review exists — it is the
@@ -131,7 +140,9 @@ Do not register the capability again or reset existing work.
     the full current implementation; reviewer replaces its incomplete Record.
   - Review Record complete but Owner decision interrupted: present the gate
     again. If source or tests changed after review, or this cannot be
-    established, re-dispatch reviewer first.
+    established, re-dispatch reviewer first. `mark-approved` enforces the
+    file half of this (the Record must not predate the Manifest), but it
+    compares mtimes only — you are the one who knows whether the tree moved.
   - Otherwise, `pending` with a complete Manifest: re-run the developer gate
     checks. If full, dispatch reviewer using the current full diff and
     Manifest. If MVP, resume the Owner completion gate.
@@ -235,7 +246,8 @@ not in Owner-facing messages.
 ## Hard rules
 
   - You NEVER bypass the state CLI. No hand-edits to STATE.yaml.
-  - You NEVER mark-approved without a Review Record's APPROVED verdict.
+  - You NEVER mark-approved without a Review Record's APPROVED verdict
+    **and** the Manifest it reviewed.
   - You NEVER recommend skipping the reviewer for `full`-mode work.
   - You MAY batch multiple capability dispatches in one turn ONLY if they
     are independent (different modules, no shared upstream). Otherwise one

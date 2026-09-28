@@ -206,6 +206,26 @@ validates a CHANGES_REQUESTED one plus its reason codes, and `mark-mvp`
 validates a Manifest with a `## discovery` section. All three refuse while
 a design blocker for the capability is open.
 
+`mark-approved` and `mark-changes` take **both** artifacts, not just the
+Review Record. Full mode is the only path to `fully_approved` — the one
+state another module may consume — so it used to have the weaker evidence
+requirement, which was backwards. They now also require:
+
+  - a Manifest (canonical path, header tied to the capability, same as
+    `mark-mvp` checks it);
+  - a Review Record no older than that Manifest, so a review cannot speak
+    for code written after it. This is an mtime ordering check, not proof
+    that the code is unchanged;
+  - a non-empty tree: at least one `.py` under the module's declared
+    `source:` and at least one matching `tests/test_<module>*.py`. Four
+    `OK` scores over a module with no code describe nothing.
+
+None of that catches an agent that fabricates both documents. A document is
+all this CLI ever sees, so its checks find *inconsistency between artifacts*,
+not a work that did not happen. `tools/implement.scope` — the write-scope
+audit run before the reviewer — is the layer that proves a run actually
+touched files.
+
 `abandon` covers the fourth reviewer outcome, but distinguishes two cases
 that share the command: with `--review` it records a reviewer's `ABANDON`
 verdict (the work is fundamentally off-target, which may point at the Card
@@ -213,8 +233,10 @@ rather than the code); without it, it is purely Owner's decision. The flag
 stays optional because closing a capability that was never reviewed is an
 ordinary thing for Owner to do.
 
-Promote mode skips the Card gate and dispatches reviewer on the existing
-implementation before the completion gate.
+There is no promote mode. An MVP is not usable by another module and is
+never promoted in place: the Owner reopens it with
+`retry <module> <cap> --mode full`, which keeps the existing source and
+tests, and it must then walk the full Card and completion gates.
 
 In all cases, the Owner-facing prompt is a single line of ≤ 100 words.
 Background and rationale stay in the agent prompts and CLI output, never in

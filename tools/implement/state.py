@@ -39,6 +39,11 @@ from tools.implement.errors import StateError
 
 STATE_ROOT = Path("docs/implement")
 
+# Repo-relative root that architecture/, modules/ and tests/ hang off.
+# Separate from STATE_ROOT because they are different trees, and a constant
+# rather than an argument so the artifact checks stay pure w.r.t. the state.
+REPO_ROOT = Path(".")
+
 VALID_STATES: tuple[str, ...] = (
     "pending",
     "mvp_developed",
@@ -321,6 +326,81 @@ def _require_reason_codes(module: str, capability: str, content: str) -> list[st
     return codes
 
 
+def _module_source(module: str) -> Path:
+    """The module's declared source root, from its module.yaml.
+
+    Read rather than assumed as `modules/<name>`: the declaration is the
+    source of truth, and a hardcoded path would check the wrong directory
+    for any module that declares otherwise.
+    """
+    path = REPO_ROOT / "architecture/modules" / module / "module.yaml"
+    if not path.is_file():
+        raise StateError(f"module declaration not found: {path}")
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    source = data.get("source")
+    if not isinstance(source, str) or not source:
+        raise StateError(f"{path} declares no `source:` root to check")
+    return REPO_ROOT / source
+
+
+def _require_work_exists(module: str) -> None:
+    """Refuse a gate on a capability with nothing in the tree.
+
+    A capability with no source file and no test cannot have been developed,
+    so a Review Record claiming four OK scores over it is describing work
+    that provably does not exist. This is a floor, not a proof: the tool
+    cannot know which files belong to which capability, so it only rejects
+    the empty case. It will not catch an agent that fabricates both a
+    Manifest and a Review Record — nothing in this CLI can, because a
+    document is all it ever sees. The write-scope audit
+    (`python -m tools.implement.scope --base <commit>`) is the layer that
+    proves a run actually touched files.
+    """
+    source = _module_source(module)
+    has_code = source.is_dir() and any(source.rglob("*.py"))
+    # tests are conventionally tests/test_<module>_<cap>.py; the directory
+    # uses hyphens and the package uses underscores, so accept either
+    stem = module.replace("-", "_")
+    tests = REPO_ROOT / "tests"
+    has_tests = tests.is_dir() and any(
+        p.name.startswith("test_" + stem) and p.suffix == ".py" for p in tests.iterdir()
+    )
+    if not has_code:
+        raise StateError(
+            f"{module} has no Python source under {source}/, so no "
+            f"implementation of this capability exists to review. If the work "
+            f"lives elsewhere, fix the module's declared `source:` rather than "
+            f"approving a Record over an empty tree."
+        )
+    if not has_tests:
+        raise StateError(
+            f"no test file matching tests/test_{stem}*.py exists, so there is "
+            f"no test coverage behind the Review Record's `test_coverage: OK`. "
+            f"The developer must add tests under tests/ before review."
+        )
+
+
+def _require_review_after_manifest(review: str, manifest: str) -> None:
+    """The staleness rule AGENTS.md promises and nothing used to enforce.
+
+    A review that predates the Manifest it reviewed is reviewing something
+    else. Compared by mtime, which is an *ordering* check and not a content
+    check: it cannot tell a rewrite from a `touch`, and it is defeated by a
+    copied file. Equal timestamps pass, because on a coarse clock a review
+    written moments after its Manifest legitimately lands on the same tick.
+    """
+    review_mtime = Path(review).stat().st_mtime
+    manifest_mtime = Path(manifest).stat().st_mtime
+    if review_mtime < manifest_mtime:
+        raise StateError(
+            f"the Review Record ({review}) is older than the Implementation "
+            f"Manifest ({manifest}), so it reviewed an earlier state of the "
+            f"work. Re-run the review over the current Manifest. Note this is "
+            f"an mtime ordering check only, not proof that the code is "
+            f"unchanged."
+        )
+
+
 def _refuse_if_blocked(module: str, capability: str, root: Path, command: str) -> None:
     """Refuse a gate transition while a design blocker for it is still open.
 
@@ -424,6 +504,15 @@ def cmd_mark_changes(args: argparse.Namespace) -> int:
     rec = _get_cap(record, args.capability)
     _validate_transition(rec.state, "changes_requested")
     _refuse_if_blocked(args.module, args.capability, Path(args.root), "mark-changes")
+    _require_artifact(
+        args.module,
+        args.capability,
+        Path(args.root),
+        "manifest",
+        args.manifest,
+        f"# manifest: {args.module} / {args.capability}",
+    )
+    _require_work_exists(args.module)
     content = _require_artifact(
         args.module,
         args.capability,
@@ -432,10 +521,13 @@ def cmd_mark_changes(args: argparse.Namespace) -> int:
         args.review,
         f"# review: {args.module} / {args.capability}",
     )
+    _require_review_after_manifest(args.review, args.manifest)
     _require_verdict(args.module, args.capability, content, "CHANGES_REQUESTED")
     codes = _require_reason_codes(args.module, args.capability, content)
     rec.state = "changes_requested"
     rec.review = str(Path(args.review))
+    if not rec.manifest:
+        rec.manifest = args.manifest
     save_state(record, Path(args.root))
     _print(
         f"marked {args.module}/{args.capability} as changes_requested "
@@ -548,6 +640,15 @@ def cmd_retry(args: argparse.Namespace) -> int:
 
 
 def cmd_mark_approved(args: argparse.Namespace) -> int:
+    """Record Owner's approval of an APPROVED review.
+
+    Requires the Manifest as well as the Review. Full mode is the only path
+    to `fully_approved` — the one state other modules may consume — so it
+    used to have the weaker evidence requirement, which was backwards:
+    mark-mvp demanded a Manifest, mark-approved did not. The Manifest is
+    what lists the files that were written, so it is the one artifact that
+    can be checked against the tree.
+    """
     record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
     _validate_transition(rec.state, "fully_approved")
@@ -557,6 +658,16 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
             "mark-approved requires mode=full; reopen an MVP with "
             "`retry --mode full` and take it through the reviewed path"
         )
+    _require_artifact(
+        args.module,
+        args.capability,
+        Path(args.root),
+        "manifest",
+        args.manifest,
+        f"# manifest: {args.module} / {args.capability}",
+    )
+    _require_work_exists(args.module)
+    _require_review_after_manifest(args.review, args.manifest)
     content = _require_artifact(
         args.module,
         args.capability,
@@ -578,6 +689,8 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
     rec.state = "fully_approved"
     rec.approved_at = _now_iso()
     rec.review = str(Path(args.review))
+    if not rec.manifest:
+        rec.manifest = args.manifest
     save_state(record, Path(args.root))
     _print(f"marked {args.module}/{args.capability} as fully_approved")
     return 0
@@ -805,6 +918,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("mark-changes", help="reviewer rejects; developer iterates")
     module_cap(sp)
     sp.add_argument("--review", default="")
+    sp.add_argument(
+        "--manifest",
+        default="",
+        help="the Implementation Manifest this review covers; required",
+    )
 
     sp = sub.add_parser(
         "retry",
@@ -823,6 +941,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     module_cap(sp)
     sp.add_argument("--review", default="")
+    sp.add_argument(
+        "--manifest",
+        default="",
+        help="the Implementation Manifest this review covers; required",
+    )
 
     sp = sub.add_parser("abandon", help="owner closes a capability")
     module_cap(sp)

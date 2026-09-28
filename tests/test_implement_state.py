@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -93,6 +94,15 @@ class StateTransitionTests(unittest.TestCase):
         self.assertEqual(compute_module_state(rec.capabilities.values()), "planned")
 
 
+# Fixed timestamps so the review-after-manifest ordering check is exercised
+# deterministically instead of depending on how fast the test writes files.
+MANIFEST_MTIME = 1_600_000_000
+
+
+def _set_mtime(path: Path, when: float) -> None:
+    os.utime(path, (when, when))
+
+
 class StateCLITests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -102,11 +112,31 @@ class StateCLITests(unittest.TestCase):
         import tools.implement.state as st
 
         st.STATE_ROOT = self.root
+        # A repo tree for the artifact checks: a declared module with source
+        # and a test file, so a capability can legitimately be approved. The
+        # checks refuse a capability with an empty tree, so without this
+        # every approval test would be testing the refusal instead.
+        self.repo = self.root / "repo"
+        (self.repo / "architecture/modules/alpha").mkdir(parents=True)
+        (self.repo / "architecture/modules/alpha/module.yaml").write_text(
+            "name: alpha\nsource: modules/alpha\n", encoding="utf-8"
+        )
+        (self.repo / "modules/alpha").mkdir(parents=True)
+        (self.repo / "modules/alpha/thing.py").write_text(
+            "def f() -> int:\n    return 1\n", encoding="utf-8"
+        )
+        (self.repo / "tests").mkdir(parents=True)
+        (self.repo / "tests/test_alpha_one.py").write_text(
+            "import unittest\n", encoding="utf-8"
+        )
+        self._old_repo_root = st.REPO_ROOT
+        st.REPO_ROOT = self.repo
 
     def tearDown(self) -> None:
         import tools.implement.state as st
 
         st.STATE_ROOT = self._old_state_root
+        st.REPO_ROOT = self._old_repo_root
         self._tmp.cleanup()
 
     def _seed(self, module: str, cap: str, mode: str = "full") -> None:
@@ -137,6 +167,20 @@ class StateCLITests(unittest.TestCase):
         )
         return target
 
+    def _full_manifest(self, module: str, cap: str) -> Path:
+        """Write a full-mode Manifest that mark-approved will accept."""
+        target = self.root / module / f"{cap}.manifest.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            f"# manifest: {module} / {cap}\n\n"
+            f"- mode: full\n"
+            f"- new files:\n   - modules/{module}/thing.py\n"
+            f"- tests passing: 3 unit, 0 contract-conformance\n",
+            encoding="utf-8",
+        )
+        _set_mtime(target, MANIFEST_MTIME)
+        return target
+
     def _review(
         self,
         module: str,
@@ -161,6 +205,7 @@ class StateCLITests(unittest.TestCase):
             f"- verdict: {verdict}\n",
             encoding="utf-8",
         )
+        _set_mtime(target, MANIFEST_MTIME + 60)
         return target
 
     def _blocker(self, module: str, cap: str) -> Path:
@@ -270,9 +315,11 @@ class StateCLITests(unittest.TestCase):
             "- verdict: APPROVED\n",
             encoding="utf-8",
         )
+        mf = self._full_manifest("alpha", "alpha.one")
         rc, out = self._run(
             "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
             "--review", str(review),
+            "--manifest", str(mf),
         )
         self.assertEqual(rc, 0)
         self.assertIn("fully_approved", out)
@@ -282,7 +329,7 @@ class StateCLITests(unittest.TestCase):
         self._seed("alpha", "alpha.one", mode="mvp")
         m = self._manifest("alpha", "alpha.one")
         self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one", "--manifest", str(m))
-        rc, out = self._run("--root", str(self.root), "mark-approved", "alpha", "alpha.one")
+        rc, out = self._run("--root", str(self.root), "mark-approved", "alpha", "alpha.one", "--manifest", str(self._full_manifest("alpha", "alpha.one")))
         self.assertEqual(rc, 1)
         self.assertIn("not allowed", out)
         self.assertIn("pending", out)
@@ -389,6 +436,7 @@ class StateCLITests(unittest.TestCase):
         self._run(
             "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
             "--review", str(review),
+            "--manifest", str(self._full_manifest("alpha", "alpha.one")),
         )
         rc, _ = self._run("--root", str(self.root), "retry", "alpha", "alpha.one")
         self.assertEqual(rc, 0)
@@ -399,9 +447,11 @@ class StateCLITests(unittest.TestCase):
     def test_mark_changes_records_the_review_path(self) -> None:
         self._seed("alpha", "alpha.one")
         review = self._review("alpha", "alpha.one", "CHANGES_REQUESTED", "boundary")
+        mf = self._full_manifest("alpha", "alpha.one")
         rc, out = self._run(
             "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
             "--review", str(review),
+            "--manifest", str(mf),
         )
         self.assertEqual(rc, 0)
         self.assertIn("boundary", out)
@@ -410,7 +460,7 @@ class StateCLITests(unittest.TestCase):
 
     def test_mark_changes_requires_a_review(self) -> None:
         self._seed("alpha", "alpha.one")
-        rc, out = self._run("--root", str(self.root), "mark-changes", "alpha", "alpha.one")
+        rc, out = self._run("--root", str(self.root), "mark-changes", "alpha", "alpha.one", "--manifest", str(self._full_manifest("alpha", "alpha.one")))
         self.assertEqual(rc, 1)
         self.assertIn("--review", out)
 
@@ -418,9 +468,11 @@ class StateCLITests(unittest.TestCase):
         """Recording a rejection on top of an APPROVED record would be nonsense."""
         self._seed("alpha", "alpha.one")
         review = self._review("alpha", "alpha.one", "APPROVED", "quality")
+        mf = self._full_manifest("alpha", "alpha.one")
         rc, out = self._run(
             "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
             "--review", str(review),
+            "--manifest", str(mf),
         )
         self.assertEqual(rc, 1)
         self.assertIn("CHANGES_REQUESTED", out)
@@ -429,9 +481,11 @@ class StateCLITests(unittest.TestCase):
         """A rejection the developer cannot act on sends them back to guessing."""
         self._seed("alpha", "alpha.one")
         review = self._review("alpha", "alpha.one", "CHANGES_REQUESTED", reasons="")
+        mf = self._full_manifest("alpha", "alpha.one")
         rc, out = self._run(
             "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
             "--review", str(review),
+            "--manifest", str(mf),
         )
         self.assertEqual(rc, 1)
         self.assertIn("reason code", out)
@@ -439,9 +493,11 @@ class StateCLITests(unittest.TestCase):
     def test_mark_changes_rejects_an_unknown_reason_code(self) -> None:
         self._seed("alpha", "alpha.one")
         review = self._review("alpha", "alpha.one", "CHANGES_REQUESTED", "vibes")
+        mf = self._full_manifest("alpha", "alpha.one")
         rc, out = self._run(
             "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
             "--review", str(review),
+            "--manifest", str(mf),
         )
         self.assertEqual(rc, 1)
         self.assertIn("vibes", out)
@@ -453,9 +509,11 @@ class StateCLITests(unittest.TestCase):
         self._seed("alpha", "alpha.one")
         review = self._review("alpha", "alpha.one", "APPROVED")
         self._blocker("alpha", "alpha.one")
+        mf = self._full_manifest("alpha", "alpha.one")
         rc, out = self._run(
             "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
             "--review", str(review),
+            "--manifest", str(mf),
         )
         self.assertEqual(rc, 1)
         self.assertIn("design blocker", out)
@@ -479,9 +537,11 @@ class StateCLITests(unittest.TestCase):
         self._seed("alpha", "alpha.one")
         review = self._review("alpha", "alpha.one", "CHANGES_REQUESTED", "quality")
         self._blocker("alpha", "alpha.one")
+        mf = self._full_manifest("alpha", "alpha.one")
         rc, out = self._run(
             "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
             "--review", str(review),
+            "--manifest", str(mf),
         )
         self.assertEqual(rc, 1)
         self.assertIn("design blocker", out)
@@ -492,9 +552,11 @@ class StateCLITests(unittest.TestCase):
         review = self._review("alpha", "alpha.one", "APPROVED")
         blocker = self._blocker("alpha", "alpha.one")
         blocker.rename(blocker.with_name("alpha.one.design-blocker.resolved.md"))
+        mf = self._full_manifest("alpha", "alpha.one")
         rc, _ = self._run(
             "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
             "--review", str(review),
+            "--manifest", str(mf),
         )
         self.assertEqual(rc, 0)
 
@@ -510,6 +572,7 @@ class StateCLITests(unittest.TestCase):
         self._run(
             "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
             "--review", str(review),
+            "--manifest", str(self._full_manifest("alpha", "alpha.one")),
         )
         self._blocker("alpha", "alpha.one")
         rc, _ = self._run("--root", str(self.root), "retry", "alpha", "alpha.one")
@@ -601,6 +664,117 @@ class StateCLITests(unittest.TestCase):
             "--root", str(self.root), "mark-mvp", "alpha", "ghost.cap"
         )
         self.assertEqual(rc, 1)
+
+
+    # --- full mode needs evidence too, not just the review -----------------
+    #
+    # mark-mvp always demanded a Manifest. mark-approved, the one path to
+    # the only state another module may consume, demanded less. That was
+    # backwards, and it let a fabricated Review Record over an empty tree
+    # reach fully_approved in three lines of shell.
+
+    def _approve(self, module: str, cap: str, review: Path, manifest: Path):
+        return self._run(
+            "--root", str(self.root), "mark-approved", module, cap,
+            "--review", str(review), "--manifest", str(manifest),
+        )
+
+    def test_mark_approved_requires_a_manifest(self) -> None:
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "APPROVED")
+        mf = self._full_manifest("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
+            "--review", str(review),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("--manifest", out)
+        # and with one it passes, so the failure is the missing evidence
+        rc, _ = self._approve("alpha", "alpha.one", review, mf)
+        self.assertEqual(rc, 0)
+
+    def test_mark_approved_refuses_an_empty_tree(self) -> None:
+        """Four OK scores over a module with no code describes nothing."""
+        import shutil
+
+        shutil.rmtree(self.repo / "modules/alpha")
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "APPROVED")
+        mf = self._full_manifest("alpha", "alpha.one")
+        rc, out = self._approve("alpha", "alpha.one", review, mf)
+        self.assertEqual(rc, 1)
+        self.assertIn("no Python source", out)
+        self.assertNotEqual(
+            load_state("alpha", self.root).capabilities["alpha.one"].state,
+            "fully_approved",
+        )
+
+    def test_mark_approved_refuses_when_no_tests_exist(self) -> None:
+        """A Record cannot claim test_coverage: OK over no test file."""
+        import shutil
+
+        shutil.rmtree(self.repo / "tests")
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "APPROVED")
+        mf = self._full_manifest("alpha", "alpha.one")
+        rc, out = self._approve("alpha", "alpha.one", review, mf)
+        self.assertEqual(rc, 1)
+        self.assertIn("no test file matching", out)
+
+    def test_mark_approved_refuses_a_review_older_than_the_manifest(self) -> None:
+        """The staleness rule AGENTS.md promised and nothing enforced."""
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "APPROVED")
+        mf = self._full_manifest("alpha", "alpha.one")
+        _set_mtime(review, MANIFEST_MTIME - 60)  # reviewed before the work it covers
+        rc, out = self._approve("alpha", "alpha.one", review, mf)
+        self.assertEqual(rc, 1)
+        self.assertIn("older than", out)
+        self.assertIn("ordering check only", out)
+
+    def test_mark_approved_accepts_a_review_on_the_same_mtime_tick(self) -> None:
+        """A coarse clock can land a legitimate review on the manifest's tick."""
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "APPROVED")
+        mf = self._full_manifest("alpha", "alpha.one")
+        _set_mtime(review, MANIFEST_MTIME)
+        rc, _ = self._approve("alpha", "alpha.one", review, mf)
+        self.assertEqual(rc, 0)
+
+    def test_mark_changes_also_requires_the_manifest(self) -> None:
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "CHANGES_REQUESTED", "quality")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
+            "--review", str(review),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("--manifest", out)
+
+    def test_mark_changes_also_refuses_an_empty_tree(self) -> None:
+        import shutil
+
+        shutil.rmtree(self.repo / "modules/alpha")
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "CHANGES_REQUESTED", "quality")
+        mf = self._full_manifest("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
+            "--review", str(review), "--manifest", str(mf),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("no Python source", out)
+
+    def test_a_successful_approval_records_both_artifacts(self) -> None:
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "APPROVED")
+        mf = self._full_manifest("alpha", "alpha.one")
+        self._approve("alpha", "alpha.one", review, mf)
+        rec = load_state("alpha", self.root).capabilities["alpha.one"]
+        self.assertEqual(rec.review, str(review))
+        self.assertEqual(rec.manifest, str(mf))
+
+
 
 
 class ModuleStateAggregationTests(unittest.TestCase):

@@ -176,3 +176,23 @@ Still open from the same review (P1, not started):
       genuinely *is* blocked — an upstream that is not `fully_approved` — is
       a different one, reported by `state upstream`, not by this field.
       Renamed to `rework`.
+- [x] A transition could be driven by a document instead of by work. This was
+      demonstrated, not theorised: a hand-written Review Record with four
+      `OK` scores and an `APPROVED` verdict, over a module with no code in
+      it, took `mark-approved` to `fully_approved` — the one state other
+      modules may consume. `mark-mvp` already required a Manifest, so full
+      mode, the *stronger* path, required the weaker evidence; that was
+      backwards. `mark-approved` and `mark-changes` now take `--manifest`
+      alongside `--review` and validate it the way `mark-mvp` does; the
+      Review Record may not predate the Manifest; and the module's declared
+      `source:` tree must hold a `.py` and `tests/` must hold a matching
+      `tests/test_<module>*.py`. Eight tests, one per rule, and they were
+      checked to fail when the rules are removed. The honest limit is
+      recorded in the code: these checks find inconsistency *between
+      artifacts*, and an agent that fabricates both documents passes all
+      of them, because a document is all this CLI ever sees. The
+      write-scope audit (`tools/implement.scope`), which compares the tree
+      against the commit recorded before the spawn, is the layer that
+      proves a run actually touched files — and it runs before the
+      reviewer, not at the state transition, so a refusal here is a
+      backstop rather than the primary control.
