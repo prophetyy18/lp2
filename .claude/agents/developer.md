@@ -46,6 +46,10 @@ You MUST NOT read:
   - legacy project code (`robinhood_lp.*`)
   - other modules' STATE files
   - the Implementation Manifest or Review Record of another capability
+  - `docs/implement/<your-module>/<your-capability>.mvp-manifest.md` — the
+    archived discovery of a prior MVP. It is module-designer's input, and
+    reading it here would let a prototype's raw intent reach you around the
+    Card the Owner approved. Build from the Card.
 
 The exact allow-list is the answer to
 `python -m framework.architecture.cli readable <your-module>`. If your
@@ -103,6 +107,33 @@ If you need something outside your scope, stop and ask the dispatcher.
     the template, with a concrete case. Return `DESIGN_BLOCKED` and its path
     to dispatcher. Do not reinterpret the design or mark the capability done.
     Routine implementation choices within the Card remain yours.
+
+## If your tree already has code
+
+Sometimes you are dispatched into a tree that is not empty. Find out which
+case you are in before you write anything:
+
+  - **A prior pass you own** — the same capability was built, the reviewer
+    rejected it, and Owner reopened it. Existing code is *reviewed-adjacent*
+    work: read it, and fix what the reason codes named. Its tests are real
+    tests, though they were not enough.
+  - **A disposable prototype** — the capability ran as an MVP and Owner
+    reopened it with `retry --mode full`. The prototype was **never
+    reviewed**: it has no error handling, no timeouts, no retry, no edge
+    cases, and its tests only cover the happy path. It is not a spec and
+    not a starting point that is safe to extend.
+  - **Nothing there yet** — a first implementation.
+
+In every case your specification is the **Capability Card**, not the code.
+Where existing code and the Card disagree, the Card is right and the code
+is wrong. Existing tests are evidence, not requirements: keep a test only
+if the Card asks for the case it covers, and add the ones the Card asks for
+that it does not. If a prototype did something the Card forbids, that is a
+reason to throw it away, not a reason to keep it.
+
+Do not go looking for the prototype's rationale — module-designer already
+folded it into the Card, and Owner approved that Card. If the Card looks
+wrong to you, that is a Design Blocker, not a licence to reinterpret it.
 
 ## Pre-handoff checks (you run these yourself)
 

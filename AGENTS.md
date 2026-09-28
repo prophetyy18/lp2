@@ -58,14 +58,20 @@ step is what makes the knowledge survive:
 
 ```
 retry <m> <cap> --mode full
-  → read the Manifest's discovery
-  → module-designer folds it into a revised Card   ← the handoff
+  → archives the MVP Manifest to <cap>.mvp-manifest.md
+  → module-designer reads that discovery and folds it into a revised Card  ← the handoff
   → Owner approves → developer builds from the revised Card
 ```
 
 The MVP ran in a different agent session whose memory is gone. The revised
 Card is where its findings have to live, so a developer never inherits
-prototype code whose intent nobody wrote down.
+prototype code whose intent nobody wrote down. The prototype's code does
+stay in the tree, so the developer is told what it is: the Card is the
+specification, the prototype is not, and existing tests are evidence rather
+than requirements.
+
+An MVP is optional. `full` is the default mode and a fresh full
+implementation never looks for one.
 
 Full-mode review keeps four scores: contract conformance (including spec
 drift), boundary, test coverage, and implementation quality. Quality covers

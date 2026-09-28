@@ -278,6 +278,63 @@ class StateCLITests(unittest.TestCase):
         self.assertEqual(rec.capabilities["alpha.one"].state, "pending")
         self.assertEqual(rec.capabilities["alpha.one"].mode, "full")
 
+    def test_retry_from_mvp_archives_the_discovery_before_it_is_overwritten(self) -> None:
+        """The full pass writes to the same manifest path; discovery must survive."""
+        self._seed("alpha", "alpha.one", mode="mvp")
+        m = self._manifest("alpha", "alpha.one")
+        self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one", "--manifest", str(m))
+        self._run(
+            "--root", str(self.root), "retry", "alpha", "alpha.one", "--mode", "full"
+        )
+        archived = self.root / "alpha" / "alpha.one.mvp-manifest.md"
+        self.assertTrue(archived.is_file())
+        self.assertIn("## discovery", archived.read_text(encoding="utf-8"))
+        # the record must not still point at a file the full pass will rewrite
+        rec = load_state("alpha", self.root)
+        self.assertEqual(rec.capabilities["alpha.one"].manifest, "")
+
+    def test_retry_from_mvp_refuses_when_the_manifest_is_gone(self) -> None:
+        """Silently reopening with no discovery is the failure this guards against."""
+        self._seed("alpha", "alpha.one", mode="mvp")
+        m = self._manifest("alpha", "alpha.one")
+        self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one", "--manifest", str(m))
+        m.unlink()
+        rc, out = self._run(
+            "--root", str(self.root), "retry", "alpha", "alpha.one", "--mode", "full"
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("is gone", out)
+        self.assertEqual(
+            load_state("alpha", self.root).capabilities["alpha.one"].state, "mvp_developed"
+        )
+
+    def test_retry_from_mvp_refuses_to_clobber_an_existing_archive(self) -> None:
+        self._seed("alpha", "alpha.one", mode="mvp")
+        m = self._manifest("alpha", "alpha.one")
+        self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one", "--manifest", str(m))
+        archived = self.root / "alpha" / "alpha.one.mvp-manifest.md"
+        archived.write_text("an earlier archive\n", encoding="utf-8")
+        rc, out = self._run(
+            "--root", str(self.root), "retry", "alpha", "alpha.one", "--mode", "full"
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("already exists", out)
+        self.assertEqual(archived.read_text(encoding="utf-8"), "an earlier archive\n")
+
+    def test_retry_from_changes_requested_leaves_the_manifest_alone(self) -> None:
+        """Only the MVP reopen archives; a rejected full pass has no spike to keep."""
+        self._seed("alpha", "alpha.one", mode="full")
+        review = self.root / "alpha" / "alpha.one.review.md"
+        review.write_text(
+            "# review: alpha / alpha.one\n- verdict: CHANGES_REQUESTED\n",
+            encoding="utf-8",
+        )
+        self._run(
+            "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
+        )
+        rc, _ = self._run("--root", str(self.root), "retry", "alpha", "alpha.one")
+        self.assertEqual(rc, 0)
+
     def test_mvp_only_exits_to_pending_or_abandoned(self) -> None:
         from tools.implement.state import _ALLOWED
 

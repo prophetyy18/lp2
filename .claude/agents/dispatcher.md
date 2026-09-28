@@ -96,8 +96,14 @@ or Design Blocker. Resolve an open Design Blocker before dispatching either
 developer or reviewer.
 Do not register the capability again or reset existing work.
 
-  - `pending` with no complete Manifest: re-dispatch developer with the Card,
-    existing files and a note to continue and finish the Manifest.
+  - `pending` with nothing written for this capability yet: a **first**
+    implementation, not an interrupted one. Dispatch developer with the Card
+    alone. It expects no prior traces and does not need them — most
+    capabilities never have an MVP, and that is the normal path.
+  - `pending` with partial work (some source, some tests, or a Manifest
+    draft): an **interrupted pass**. Re-dispatch developer with the Card,
+    the existing files, and a note to continue and finish the Manifest
+    rather than restart it.
   - Review interrupted or its Record incomplete: re-dispatch reviewer on
     the full current implementation; reviewer replaces its incomplete Record.
   - Review Record complete but Owner decision interrupted: present the gate
@@ -113,16 +119,27 @@ Do not register the capability again or reset existing work.
 
 Reopening an MVP for real work is not a developer step on its own:
 
-  1. Owner decides the capability is needed → `retry <m> <cap> --mode full`
-  2. Read the MVP Manifest's `## discovery`. If `surprised` contradicts the
-     contract, route to ac-designer first; do not let a Card edit paper over
-     a contract defect.
+  1. Owner decides the capability is needed → `retry <m> <cap> --mode full`.
+     This archives the MVP Manifest to `<cap>.mvp-manifest.md` first: the
+     full developer writes to `<cap>.manifest.md`, so without the archive
+     the discovery would be overwritten by the pass it was written for.
+  2. Read `## discovery` from the archived
+     `docs/implement/<m>/<cap>.mvp-manifest.md`. If `surprised` contradicts
+     the contract, route to ac-designer first; do not let a Card edit paper
+     over a contract defect.
   3. Dispatch module-designer to fold answer / keep / discard / known_gaps
      into a revised Card, and get that Card approved.
   4. Only then dispatch developer, who works from the revised Card.
 
 Step 3 is not optional. The MVP ran in an agent session that no longer
-exists; the Card is the only place its findings can live.
+exists; the Card is the only place its findings can live. Step 1 is not
+optional either: `retry` refuses if the MVP Manifest is gone, because
+reopening with no discovery would silently turn a documented decision back
+into a guess.
+
+The prototype's code is still in the tree at step 4. developer.md's "If
+your tree already has code" section tells the developer what to do with it;
+do not explain it for them in the spawn prompt.
 
 An interrupted agent run is not a review verdict or an Owner decision.
 

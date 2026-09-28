@@ -344,6 +344,31 @@ def cmd_mark_changes(args: argparse.Namespace) -> int:
     return 0
 
 
+def _archive_mvp_manifest(module: str, capability: str, given: str) -> Path:
+    """Preserve an MVP Manifest before the full pass overwrites it.
+
+    The full developer writes its Manifest to the same canonical path, so
+    without this the `## discovery` section — the only durable record of
+    what the spike found, and what the revised Card is built from — would be
+    silently destroyed by the very pass it was written for.
+    """
+    src = Path(given)
+    if not src.is_file():
+        raise StateError(
+            f"cannot reopen {module}/{capability}: its MVP Manifest {src} is gone. "
+            f"That file's discovery section is the only record of what the spike "
+            f"found; recreate it, or abandon the capability and re-plan it."
+        )
+    dest = src.with_name(f"{capability}.mvp-manifest.md")
+    if dest.exists():
+        raise StateError(
+            f"an archived MVP Manifest already exists at {dest}; refusing to "
+            f"overwrite it. Inspect it before reopening {module}/{capability}."
+        )
+    dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    return dest
+
+
 def cmd_retry(args: argparse.Namespace) -> int:
     """Reopen a capability for another developer pass.
 
@@ -356,10 +381,15 @@ def cmd_retry(args: argparse.Namespace) -> int:
     Owner turns a prototype into something another module may consume. The
     existing source and tests stay; the capability simply has to earn an
     APPROVED review like any other.
+
+    Reopening from `mvp_developed` first archives the MVP Manifest to
+    `<cap>.mvp-manifest.md` and clears `rec.manifest`, because the full pass
+    writes to the same path and would otherwise erase the discovery.
     """
     record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
     _validate_transition(rec.state, "pending")
+    archived = None
     if rec.state == "mvp_developed":
         if args.mode != "full":
             raise StateError(
@@ -367,7 +397,9 @@ def cmd_retry(args: argparse.Namespace) -> int:
                 f"requires --mode full; an MVP cannot be promoted in place, and "
                 f"only mode=full work can reach fully_approved"
             )
+        archived = _archive_mvp_manifest(args.module, args.capability, rec.manifest)
         rec.mode = "full"
+        rec.manifest = ""
     rec.state = "pending"
     save_state(record, Path(args.root))
     _print(
@@ -375,6 +407,11 @@ def cmd_retry(args: argparse.Namespace) -> int:
         f"(mode={rec.mode}); it is not consumable by other modules until "
         f"fully_approved"
     )
+    if archived is not None:
+        _print(
+            f"archived its MVP Manifest to {archived}; its discovery section "
+            f"is what module-designer must fold into the revised Card"
+        )
     return 0
 
 

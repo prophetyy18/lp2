@@ -25,6 +25,10 @@ You MAY read only:
   - `tools/implement/**`                                         (state machine + CLI)
   - `docs/implement/<your-module>/<capability>.design-blocker.md` (when revising a Card)
   - `docs/implement/<your-module>/<capability>.manifest.md`     (when planning after an MVP)
+  - `docs/implement/<your-module>/<capability>.mvp-manifest.md` (the archived spike
+                                                                  discovery, when the
+                                                                  dispatcher reopens
+                                                                  an MVP)
   - `docs/implement/templates/CAPABILITY_CARD.template.md`       (Card format)
 
 You MUST NOT read:
@@ -87,8 +91,11 @@ its **discovery** section is not. When the dispatcher reopens an
 before any developer is, and your job is to turn the MVP's Manifest into a
 Card the full run can be built from.
 
-Read the Manifest's `## discovery` section and produce a revised Card in
-which every one of the six fields is accounted for:
+Read the `## discovery` section of
+`docs/implement/<your-module>/<capability>.mvp-manifest.md` — the archive
+`retry --mode full` made, not the live `<capability>.manifest.md`, which the
+full developer is about to overwrite — and produce a revised Card in which
+every one of the six fields is accounted for:
 
   - `question` / `answer`  — carry the conclusion into the Card's
     `notes`, and change the Card's plan if the answer contradicts it

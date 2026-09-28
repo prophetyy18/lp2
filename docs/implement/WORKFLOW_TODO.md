@@ -70,6 +70,26 @@ Still open from the same review (P1, not started):
       `keep`/`discard` are an explicit anti-leak pair. The dead `mark-mvp
       --mode` flag was removed, and the duplicated artifact-validation code
       is now one `_require_artifact` helper.
+- [x] The full pass could not find the MVP's findings, and could not tell
+      prototype code from its own. Two causes. First, `retry` left
+      `rec.manifest` pointing at `<cap>.manifest.md`, which is the same path
+      the full developer writes — so the full Manifest overwrote the
+      `## discovery` section by the pass it was written for, and STATE then
+      pointed at a file with no discovery in it. `retry` now archives to
+      `<cap>.mvp-manifest.md`, clears `rec.manifest`, refuses if the MVP
+      Manifest has gone, and refuses to clobber an existing archive.
+      Second, developer.md only knew about *interrupted* runs; it had no
+      rule for a tree holding an unreviewed prototype, so the three
+      reasonable reactions (extend it / ignore it / be confused by its
+      tests) were all compliant. It now distinguishes a prior reviewed pass,
+      a disposable prototype, and an empty tree, and states that the Card —
+      not the code — is the specification. It is also barred from reading the
+      archived discovery, which is module-designer's input; reading it would
+      route a prototype's raw intent around the Card Owner approved.
+      Dispatcher's resume rules now separate a *first* implementation from an
+      *interrupted* one, so the common case reads as the common case: most
+      capabilities never have an MVP, and a fresh `full` run expects no prior
+      traces.
 - [ ] `mark-changes` records no review path or reason codes, so
       `changes_requested` cannot say which Record caused it.
 - [ ] Design blockers are unregistered: `mark-approved` does not check for an
