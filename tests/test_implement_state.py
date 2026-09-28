@@ -116,6 +116,27 @@ class StateCLITests(unittest.TestCase):
         rec.capabilities[cap] = CapabilityRecord(state="pending", mode=mode)
         save_state(rec, self.root)
 
+    def _manifest(self, module: str, cap: str, discovery: bool = True) -> Path:
+        """Write a Manifest that mark-mvp will accept."""
+        target = self.root / module / f"{cap}.manifest.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        block = (
+            "\n## discovery\n\n"
+            "- question: does the sharding approach hold up?\n"
+            "- answer: yes, above 8k blocks it must split\n"
+            "- surprised: the node returns execution_reverted, not a timeout\n"
+            "- keep: the split algorithm and the three replay fixtures\n"
+            "- discard: all error handling, which just returns None\n"
+            "- known_gaps: 3 of 4 declared error codes are unimplemented\n"
+            if discovery
+            else ""
+        )
+        target.write_text(
+            f"# manifest: {module} / {cap}\n\n- mode: mvp{block}",
+            encoding="utf-8",
+        )
+        return target
+
     def _run(self, *argv: str) -> tuple[int, str]:
         from tools.implement import state
 
@@ -124,20 +145,79 @@ class StateCLITests(unittest.TestCase):
         import contextlib
 
         buf = io.StringIO()
-        with contextlib.redirect_stderr(buf):
-            rc = state.main(list(argv))
+        try:
+            with contextlib.redirect_stderr(buf):
+                rc = state.main(list(argv))
+        except SystemExit as exc:
+            # argparse rejects unknown subcommands / bad flags this way
+            rc = int(exc.code or 0)
         return rc, buf.getvalue()
 
     def test_mark_mvp_succeeds(self) -> None:
         self._seed("alpha", "alpha.one", mode="mvp")
-        rc, out = self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one")
+        manifest = self._manifest("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-mvp", "alpha", "alpha.one",
+            "--manifest", str(manifest),
+        )
         self.assertEqual(rc, 0)
         self.assertIn("mvp_developed", out)
 
+    def test_mark_mvp_requires_a_manifest(self) -> None:
+        """An MVP that produced nothing is not worth recording."""
+        self._seed("alpha", "alpha.one", mode="mvp")
+        rc, out = self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one")
+        self.assertEqual(rc, 1)
+        self.assertIn("--manifest", out)
+
+    def test_mark_mvp_rejects_a_manifest_that_does_not_exist(self) -> None:
+        self._seed("alpha", "alpha.one", mode="mvp")
+        ghost = self.root / "alpha" / "alpha.one.manifest.md"
+        rc, out = self._run(
+            "--root", str(self.root), "mark-mvp", "alpha", "alpha.one",
+            "--manifest", str(ghost),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("existing manifest", out)
+
+    def test_mark_mvp_rejects_a_manifest_for_another_capability(self) -> None:
+        self._seed("alpha", "alpha.one", mode="mvp")
+        self._manifest("alpha", "alpha.two")
+        other = self.root / "alpha" / "alpha.two.manifest.md"
+        rc, out = self._run(
+            "--root", str(self.root), "mark-mvp", "alpha", "alpha.one",
+            "--manifest", str(other),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("existing manifest", out)
+
+    def test_mark_mvp_rejects_a_manifest_without_discovery(self) -> None:
+        """The discovery block is what the full run inherits; it is required."""
+        self._seed("alpha", "alpha.one", mode="mvp")
+        manifest = self._manifest("alpha", "alpha.one", discovery=False)
+        rc, out = self._run(
+            "--root", str(self.root), "mark-mvp", "alpha", "alpha.one",
+            "--manifest", str(manifest),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("## discovery", out)
+
+    def test_mark_mvp_records_the_manifest_path(self) -> None:
+        self._seed("alpha", "alpha.one", mode="mvp")
+        manifest = self._manifest("alpha", "alpha.one")
+        self._run(
+            "--root", str(self.root), "mark-mvp", "alpha", "alpha.one",
+            "--manifest", str(manifest),
+        )
+        rec = load_state("alpha", self.root)
+        self.assertEqual(rec.capabilities["alpha.one"].manifest, str(manifest))
+
     def test_mark_mvp_rejects_wrong_mode(self) -> None:
         self._seed("alpha", "alpha.one", mode="full")
+        manifest = self._manifest("alpha", "alpha.one")
         rc, _ = self._run(
-            "--root", str(self.root), "mark-mvp", "alpha", "alpha.one", "--mode", "mvp"
+            "--root", str(self.root), "mark-mvp", "alpha", "alpha.one",
+            "--manifest", str(manifest),
         )
         self.assertEqual(rc, 1)
 
@@ -160,26 +240,50 @@ class StateCLITests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("fully_approved", out)
 
-    def test_mark_approved_requires_promotion_from_mvp(self) -> None:
+    def test_mark_approved_is_refused_from_mvp_developed(self) -> None:
+        """An MVP is never consumable; it cannot reach fully_approved in place."""
         self._seed("alpha", "alpha.one", mode="mvp")
-        self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one")
+        m = self._manifest("alpha", "alpha.one")
+        self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one", "--manifest", str(m))
         rc, out = self._run("--root", str(self.root), "mark-approved", "alpha", "alpha.one")
         self.assertEqual(rc, 1)
-        self.assertIn("promote", out)
+        self.assertIn("not allowed", out)
+        self.assertIn("pending", out)
 
-    def test_promote_requires_mvp_state(self) -> None:
-        self._seed("alpha", "alpha.one", mode="full")
-        rc, _ = self._run("--root", str(self.root), "promote", "alpha", "alpha.one")
-        self.assertEqual(rc, 1)
-
-    def test_promote_resets_to_pending(self) -> None:
+    def test_mvp_cannot_jump_straight_to_fully_approved(self) -> None:
         self._seed("alpha", "alpha.one", mode="mvp")
-        self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one")
-        rc, out = self._run("--root", str(self.root), "promote", "alpha", "alpha.one")
+        m = self._manifest("alpha", "alpha.one")
+        self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one", "--manifest", str(m))
+        # no promote subcommand exists any more
+        rc, _ = self._run("--root", str(self.root), "promote", "alpha", "alpha.one")
+        self.assertEqual(rc, 2)  # argparse rejects the unknown command
+
+    def test_retry_from_mvp_requires_mode_full(self) -> None:
+        self._seed("alpha", "alpha.one", mode="mvp")
+        m = self._manifest("alpha", "alpha.one")
+        self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one", "--manifest", str(m))
+        rc, out = self._run("--root", str(self.root), "retry", "alpha", "alpha.one")
+        self.assertEqual(rc, 1)
+        self.assertIn("--mode full", out)
+
+    def test_retry_from_mvp_reopens_in_full_mode(self) -> None:
+        self._seed("alpha", "alpha.one", mode="mvp")
+        m = self._manifest("alpha", "alpha.one")
+        self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one", "--manifest", str(m))
+        rc, _ = self._run(
+            "--root", str(self.root), "retry", "alpha", "alpha.one", "--mode", "full"
+        )
         self.assertEqual(rc, 0)
         rec = load_state("alpha", self.root)
         self.assertEqual(rec.capabilities["alpha.one"].state, "pending")
         self.assertEqual(rec.capabilities["alpha.one"].mode, "full")
+
+    def test_mvp_only_exits_to_pending_or_abandoned(self) -> None:
+        from tools.implement.state import _ALLOWED
+
+        self.assertEqual(
+            _ALLOWED["mvp_developed"], frozenset({"pending", "abandoned"})
+        )
 
     def test_abandon_is_terminal(self) -> None:
         self._seed("alpha", "alpha.one", mode="full")

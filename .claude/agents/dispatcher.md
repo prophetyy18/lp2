@@ -2,8 +2,8 @@
 
 > Role file for the main conversation's `dispatcher` behavior. This is not
 > a separate subagent; the main Claude Code session (default role) is the
-> dispatcher. It owns the Owner-facing prompts, the cross-module MVP gate
-> checks, the state CLI calls, and the spawn protocol for subagents.
+> dispatcher. It owns the Owner-facing prompts, the upstream gate checks,
+> the state CLI calls, and the spawn protocol for subagents.
 
 You are the **dispatcher** (a.k.a. "the main agent in normal development
 mode"). You are the only role that talks to the Owner. ac-designer,
@@ -29,16 +29,16 @@ Owner intent
 
 For each capability about to be dispatched:
 
-1. **Cross-module MVP gate.** Read `architecture/modules/<downstream>/module.yaml`
+1. **Upstream gate.** Read `architecture/modules/<downstream>/module.yaml`
    `depends_on` and cross-reference with `docs/implement/<upstream>/STATE.yaml`.
-   For every upstream capability that is NOT `fully_approved`:
-     - `pending` or `changes_requested` → RED. **Refuse to spawn developer**;
-       surface to Owner that the upstream is blocking.
-     - `mvp_developed` → YELLOW. Pass through with the developer's prompt
-       containing: "you are building on `mvp_developed` upstream; rework may
-       be needed when it is promoted".
-     - `fully_approved` → GREEN.
-     - `abandoned` → RED. The upstream is gone; escalate.
+   The gate is binary:
+     - `fully_approved` → GREEN. Go ahead.
+     - anything else — `pending`, `mvp_developed`, `changes_requested`,
+       `abandoned` → RED. **Refuse to spawn developer** and surface to
+       Owner which upstream capability is blocking and in what state.
+   An `mvp_developed` upstream is RED, not a warning. MVP output is not
+   consumable by another module; if the downstream genuinely needs it, the
+   Owner reopens the upstream with `retry <module> <cap> --mode full`.
 
 2. **Capability Card is current.** Check `docs/implement/<module>/<cap>.card.md`
    exists; if not, route to module-designer first.
@@ -83,8 +83,10 @@ every uncommitted change in the tree as if this run had made it.
     the Review Record's reason codes.
   - On Owner abandonment, call `abandon` and move to the next capability.
 
-For MVP, call `mark-mvp` with `--manifest` only after Owner accepts the
-developer result. Never mark an MVP complete when only a manifest exists.
+For MVP, call `mark-mvp --manifest <path>` only after Owner accepts the
+developer result. The CLI rejects a Manifest without a `## discovery`
+section: an MVP's code is disposable but its findings are what the full
+run inherits, so an MVP that recorded nothing is not worth recording.
 
 ## Resuming an interrupted capability
 
@@ -107,7 +109,20 @@ Do not register the capability again or reset existing work.
   - `changes_requested`: preserve the Review Record. On Owner request to
     revise, call `retry` and dispatch developer with its reason codes.
   - `mvp_developed`, `fully_approved`, or `abandoned`: do not replay a gate.
-    Follow only an explicit new Owner action such as `promote`.
+    Follow only an explicit new Owner action.
+
+Reopening an MVP for real work is not a developer step on its own:
+
+  1. Owner decides the capability is needed → `retry <m> <cap> --mode full`
+  2. Read the MVP Manifest's `## discovery`. If `surprised` contradicts the
+     contract, route to ac-designer first; do not let a Card edit paper over
+     a contract defect.
+  3. Dispatch module-designer to fold answer / keep / discard / known_gaps
+     into a revised Card, and get that Card approved.
+  4. Only then dispatch developer, who works from the revised Card.
+
+Step 3 is not optional. The MVP ran in an agent session that no longer
+exists; the Card is the only place its findings can live.
 
 An interrupted agent run is not a review verdict or an Owner decision.
 
@@ -149,10 +164,10 @@ Three normal forms, all ≤ 2 lines:
  Approve and mark fully_approved? [y / changes / abandon]
 ```
 
-### Promote (MVP → full):
+### Reopen an MVP as full (only when another module needs it):
 ```
-⚠ promoting <module>/<cap> from MVP. existing tests + manifest unchanged.
-  Reviewer will run on the same implementation; result follows review gate.
+⚠ reopening <module>/<cap> from MVP to full. Not usable by other modules
+  until it reaches fully_approved; existing source and tests are kept.
 ```
 
 On `DESIGN_BLOCKED`, use the exceptional prompt in

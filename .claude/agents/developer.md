@@ -16,7 +16,7 @@ Spawn developer after the Owner has approved a Capability Card and the
 dispatcher has verified that:
 
   - all upstream dependencies of this capability are `fully_approved`
-    (or `mvp_developed` and the Owner accepted the yellow-flag warning)
+    (any other upstream state is a hard block; there is no yellow flag)
   - the module's STATE file is seeded with this capability in `pending`
   - the capability's `mode` is set on the record (`mvp` or `full`)
 
@@ -61,7 +61,8 @@ If you need something outside your scope, stop and ask the dispatcher.
   2. capability id
   3. Capability Card file path
   4. mode (`mvp` or `full`)
-  5. cross-module MVP flag (None | yellow | red) — see dispatcher output
+  5. upstream gate result (green | red) — see dispatcher output; red means
+     you must not start
 
 ## Outputs you produce
 
@@ -71,7 +72,9 @@ If you need something outside your scope, stop and ask the dispatcher.
   - Tests under `tests/`:
     - `tests/test_<module>_<capability>.py` covering normal, boundary, invalid, failure paths
   - Implementation Manifest at `docs/implement/<your-module>/<capability>.manifest.md`
-    (use the template)
+    (use the template). In `mvp` mode it MUST contain the `## discovery`
+    section — question / answer / surprised / keep / discard / known_gaps —
+    or `mark-mvp` will reject it.
   - Only when blocked by the approved design: a Design Blocker at
     `docs/implement/<your-module>/<capability>.design-blocker.md`
 

@@ -1,7 +1,10 @@
 # Decision Prompt templates
 
-The ONLY thing the Owner sees in normal operation. Three normal forms and
-one exceptional design blocker form.
+The ONLY thing the Owner sees in normal operation. Two normal forms, one
+reopen form, and one exceptional design blocker form.
+
+An `mvp_developed` capability is not usable by any other module. Nothing
+downstream may build on it; there is no yellow flag.
 
 ## MVP path — after developer
 
@@ -17,11 +20,11 @@ one exceptional design blocker form.
  Approve and mark fully_approved? [y / changes / abandon]
 ```
 
-## Promote path — Owner re-promotes a MVP capability to full
+## Reopen path — Owner turns an MVP into a capability other modules may use
 
 ```
-⚠ promoting <module>/<capability> from MVP. existing tests + manifest unchanged.
-  Reviewer will run on the same implementation; result follows review gate.
+⚠ reopening <module>/<capability> from MVP to full. Not usable by other
+  modules until it reaches fully_approved; existing source and tests are kept.
 ```
 
 ## Design blocker — exceptional path

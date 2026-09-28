@@ -47,11 +47,29 @@ Review of 2026-09-28 (P0 items that blocked module execution):
 
 Still open from the same review (P1, not started):
 
-- [ ] `promote` resets state to `pending`, which is indistinguishable from a
-      fresh registration; a promoted capability with no Manifest is routed
-      back to developer instead of the reviewer.
-- [ ] `mark-mvp` takes no evidence: it succeeds with no `--manifest`, and does
-      not check the file exists (`mark-approved` does both).
+- [x] `promote` is gone. An MVP is not usable by any other module and is
+      never promoted in place: there is no edge from `mvp_developed` to
+      `fully_approved`, only `pending` (reopen) or `abandoned`. Owner reopens
+      with `retry <module> <cap> --mode full`, which keeps the existing
+      source and tests. This also removed the ambiguity that made `pending`
+      two-valued — it now means only "a developer owes work", so an
+      interrupted run is never confused between "not started" and "finished,
+      awaiting review". The upstream gate is binary as a result: only
+      `fully_approved` is green, `mvp_developed` is red, and the yellow-flag
+      pass-through is gone from dispatcher, developer and the Card template.
+- [x] `mark-mvp` now requires evidence, and the evidence has a purpose. It
+      validates `--manifest` exactly as `mark-approved` validates `--review`
+      (canonical path, file exists, header ties it to the capability) and
+      additionally requires a `## discovery` section. An MVP is the foreword
+      to the full implementation, so what it records is question / answer /
+      surprised / keep / discard / known_gaps: the code is disposable, the
+      findings are the reusable part. `retry --mode full` now routes through
+      module-designer, which folds that discovery into a revised Card before
+      any developer is dispatched — the MVP ran in an agent session that no
+      longer exists, so the Card is the only place its findings can live.
+      `keep`/`discard` are an explicit anti-leak pair. The dead `mark-mvp
+      --mode` flag was removed, and the duplicated artifact-validation code
+      is now one `_require_artifact` helper.
 - [ ] `mark-changes` records no review path or reason codes, so
       `changes_requested` cannot say which Record caused it.
 - [ ] Design blockers are unregistered: `mark-approved` does not check for an
@@ -64,5 +82,4 @@ Still open from the same review (P1, not started):
       reviewer.md and the template; `mark-approved` regex-matches only one.
 - [ ] `compute_module_state` misclassifies all-`changes_requested` as
       `partial_mvp` and contains an unreachable branch.
-- [ ] `--reviewer-run` has no defined source; `mark-mvp --mode` is parsed and
-      ignored.
+- [ ] `--reviewer-run` has no defined source.

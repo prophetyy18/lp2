@@ -25,16 +25,48 @@ artifacts and findings without changing STATE.yaml.
 ## 2. Two modes per capability
 
   - **mvp** — developer writes the capability; reviewer is skipped;
-    state recorded as `mvp_developed`. **Does not count as done.**
-    Use when: prototyping, validating the contract surface, or building
-    fast to unblock downstream work.
+    state recorded as `mvp_developed`. Use when: prototyping or validating
+    the contract surface before committing to it.
   - **full** — developer writes; reviewer audits; state recorded as
-    `fully_approved` on reviewer APPROVED. **Counts as done.**
-    Use when: shipping to any consumer or committing to the contract.
+    `fully_approved` on reviewer APPROVED.
 
 Owner decides the mode when the Capability Card is prepared. Default `full`.
-A `mvp_developed` capability can later be promoted: Owner triggers
-`promote`, reviewer runs on the unchanged implementation.
+
+**Only `fully_approved` makes a capability usable.** No other module may
+build on a `pending`, `mvp_developed`, `changes_requested` or `abandoned`
+capability — there is no yellow flag and no warning pass. An MVP is never
+promoted in place; there is no edge from `mvp_developed` to
+`fully_approved`.
+
+**An MVP is the foreword to the full implementation, not a throwaway.**
+Its code is disposable — it was never reviewed, so it has no error
+handling and no edge cases — but what it learned is what the full run
+inherits. So `mark-mvp` requires a Manifest carrying a `## discovery`
+section:
+
+  - `question` / `answer`   what the spike was for, and what turned out
+  - `surprised`             anything that did not match the Card/contract
+  - `keep`                  assets the full run inherits as-is
+  - `discard`               code the full run must NOT inherit
+  - `known_gaps`            what the full run still has to build
+
+`keep` and `discard` are a pair on purpose: an unreviewed prototype that
+leaks into production is the usual way a spike becomes a liability.
+
+Turning an MVP into something real is a four-step path, and the middle
+step is what makes the knowledge survive:
+
+```
+retry <m> <cap> --mode full
+  → read the Manifest's discovery
+  → module-designer folds it into a revised Card   ← the handoff
+  → Owner approves → developer builds from the revised Card
+```
+
+The MVP ran in a different agent session whose memory is gone. The revised
+Card is where its findings have to live, so a developer never inherits
+prototype code whose intent nobody wrote down.
+
 Full-mode review keeps four scores: contract conformance (including spec
 drift), boundary, test coverage, and implementation quality. Quality covers
 explicit errors, bounded timeouts/retries where relevant, cleanup,
@@ -99,11 +131,16 @@ written only by `python -m tools.implement.state <cmd>`. The five states
 
 States:
 
-  - `pending`              registered; implementation or review may be in progress
-  - `mvp_developed`        MVP done (does not count as done)
+  - `pending`              a developer owes work on this
+  - `mvp_developed`        MVP done — not usable by any other module
   - `changes_requested`    reviewer rejected
-  - `fully_approved`       reviewer approved (counts as done)
-  - `abandoned`            owner closed this capability
+  - `fully_approved`       reviewer approved — **the only consumable state**
+  - `abandoned`            owner closed this capability (terminal)
+
+`pending` carries exactly one meaning: a developer owes work. A fresh
+registration and a reopened pass both land there, and nothing else does —
+so an interrupted run is never ambiguous between "not started" and
+"finished, awaiting review".
 
 The aggregated `module_state` is computed from per-capability states and
 written by the CLI on every save.
@@ -114,8 +151,10 @@ tests, the Manifest, and any Review Record. Incomplete developer work goes
 back to developer; incomplete review goes back to reviewer. A complete review
 awaiting Owner's decision returns to the review gate, provided the code has
 not changed since review. Never approve from a partial Record or reset files
-merely because a run was interrupted. `changes_requested` can be reopened
-through `python -m tools.implement.state retry <module> <cap>`.
+merely because a run was interrupted. `changes_requested` is reopened with
+`python -m tools.implement.state retry <module> <cap>`; an MVP that turned
+out to be needed for real is reopened with
+`retry <module> <cap> --mode full`.
 
 If developer or reviewer finds a contradiction in the approved contract or
 Card, it writes `<capability>.design-blocker.md`, returns `DESIGN_BLOCKED`,

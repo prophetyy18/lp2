@@ -6,9 +6,17 @@ transition against the closed state set. Computes the aggregated
 
 Capabilities start at pending via register. mark-mvp accepts a pending MVP;
 mark-approved accepts a full capability with an APPROVED Review Record.
-promote reopens an MVP as pending/full, and retry reopens changes_requested
-as pending. abandoned is terminal. The dispatcher is responsible for Owner
-gates; this CLI records their outcome.
+`pending` means exactly one thing — a developer owes work on it. Both the
+first registration and a reopened pass land there, and nothing else does.
+
+An MVP is never promoted in place. `mvp_developed` is not usable by any
+other module; a capability becomes consumable only through
+`fully_approved`. If an MVP later turns out to be needed for real, Owner
+reopens it with `retry --mode full` and the developer finishes it through
+the normal reviewed path. abandoned is terminal.
+
+The dispatcher is responsible for Owner gates; this CLI records their
+outcome.
 """
 
 from __future__ import annotations
@@ -37,9 +45,13 @@ VALID_STATES: tuple[str, ...] = (
 )
 
 # Allowed transitions (from -> set of allowed to-states).
+#
+# `mvp_developed` can only be reopened as pending (a full-mode redo) or
+# abandoned. There is deliberately no edge to `fully_approved`: an MVP is
+# not consumable by another module and does not become so in place.
 _ALLOWED: dict[str, frozenset[str]] = {
     "pending": frozenset({"mvp_developed", "fully_approved", "changes_requested", "abandoned"}),
-    "mvp_developed": frozenset({"fully_approved", "changes_requested", "abandoned"}),
+    "mvp_developed": frozenset({"pending", "abandoned"}),
     "fully_approved": frozenset({"changes_requested", "abandoned"}),
     "changes_requested": frozenset({"pending", "abandoned"}),
     "abandoned": frozenset(),
@@ -50,7 +62,6 @@ _MODE_RULES: dict[str, str | None] = {
     "mark_mvp": "mvp",
     "mark_changes": None,
     "mark_approved": None,
-    "promote": "full",
     "abandon": None,
 }
 
@@ -217,6 +228,44 @@ def _get_cap(record: ModuleRecord, cap: str) -> CapabilityRecord:
     return record.capabilities[cap]
 
 
+def _require_artifact(
+    module: str,
+    capability: str,
+    root: Path,
+    kind: str,          # "manifest" | "review"
+    given: str,
+    header: str,
+    required_block: str = "",
+) -> str:
+    """Validate a gate artifact and return its text.
+
+    An MVP is only worth recording if it produced something. Both gate
+    artifacts must exist at the canonical path, carry the header that ties
+    them to this capability, and — for a Manifest — actually contain the
+    discovery record that the full-mode handoff depends on.
+    """
+    if not given:
+        raise StateError(
+            f"mark-{'mvp' if kind == 'manifest' else 'approved'} requires "
+            f"--{kind} with the {kind} for {module} / {capability}"
+        )
+    path = Path(given)
+    expected = root / module / f"{capability}.{kind}.md"
+    if path.resolve() != expected.resolve() or not path.is_file():
+        raise StateError(f"{kind} must be the existing {kind} at {expected}")
+    content = path.read_text(encoding="utf-8")
+    if header not in content.splitlines():
+        raise StateError(f"{kind} header must be {header!r}")
+    if required_block and required_block not in content:
+        raise StateError(
+            f"{kind} must contain a {required_block!r} section: an MVP is the "
+            f"foreword to the full implementation, and the discovery it records "
+            f"(question / answer / surprised / keep / discard / known_gaps) is "
+            f"what the full run inherits"
+        )
+    return content
+
+
 # --- CLI subcommands -------------------------------------------------------
 
 
@@ -253,23 +302,35 @@ def cmd_mark_mvp(args: argparse.Namespace) -> int:
     record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
     _validate_transition(rec.state, "mvp_developed")
-    # Mode is set at planning time on the capability record; do not let
-    # a developer promote a full-scoped capability through the MVP gate.
-    # If the capability was planned as mode=full, the reviewer path must
-    # be used (mark-approved directly, never mark-mvp).
+    # Mode is set at planning time on the capability record. A capability
+    # planned as mode=full must take the reviewed path (mark-approved), so a
+    # full-scoped capability cannot slip through the MVP gate, which does no
+    # review and produces something no other module may consume.
     if rec.mode != "mvp":
         raise StateError(
             f"mark-mvp requires mode=mvp on the record, got mode={rec.mode!r}; "
             f"either re-plan this capability as mode=mvp, or use mark-approved "
             f"for the full path"
         )
+    _require_artifact(
+        args.module,
+        args.capability,
+        Path(args.root),
+        "manifest",
+        args.manifest,
+        f"# manifest: {args.module} / {args.capability}",
+        required_block="## discovery",
+    )
     rec.state = "mvp_developed"
     rec.mode = "mvp"
     rec.mvp_at = _now_iso()
-    if args.manifest:
-        rec.manifest = args.manifest
+    rec.manifest = args.manifest
     save_state(record, Path(args.root))
-    _print(f"marked {args.module}/{args.capability} as mvp_developed (mode=mvp)")
+    _print(
+        f"marked {args.module}/{args.capability} as mvp_developed (mode=mvp); "
+        f"not consumable by other modules. Its discovery section is what a "
+        f"later `retry --mode full` inherits."
+    )
     return 0
 
 
@@ -284,13 +345,36 @@ def cmd_mark_changes(args: argparse.Namespace) -> int:
 
 
 def cmd_retry(args: argparse.Namespace) -> int:
-    """Reopen a rejected capability for the next developer pass."""
+    """Reopen a capability for another developer pass.
+
+    Valid from two states, both of which mean "a developer owes work":
+
+      changes_requested  the reviewer rejected it; fix and resubmit
+      mvp_developed      an MVP turned out to be needed for real
+
+    Reopening from `mvp_developed` requires `--mode full`: that is how an
+    Owner turns a prototype into something another module may consume. The
+    existing source and tests stay; the capability simply has to earn an
+    APPROVED review like any other.
+    """
     record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
     _validate_transition(rec.state, "pending")
+    if rec.state == "mvp_developed":
+        if args.mode != "full":
+            raise StateError(
+                f"reopening {args.module}/{args.capability} from mvp_developed "
+                f"requires --mode full; an MVP cannot be promoted in place, and "
+                f"only mode=full work can reach fully_approved"
+            )
+        rec.mode = "full"
     rec.state = "pending"
     save_state(record, Path(args.root))
-    _print(f"reopened {args.module}/{args.capability} as pending")
+    _print(
+        f"reopened {args.module}/{args.capability} as pending "
+        f"(mode={rec.mode}); it is not consumable by other modules until "
+        f"fully_approved"
+    )
     return 0
 
 
@@ -299,17 +383,18 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
     rec = _get_cap(record, args.capability)
     _validate_transition(rec.state, "fully_approved")
     if rec.mode != "full":
-        raise StateError("mark-approved requires mode=full; promote an MVP first")
-    if not args.review:
-        raise StateError("mark-approved requires --review with an APPROVED Review Record")
-    review_path = Path(args.review)
-    expected_path = Path(args.root) / args.module / f"{args.capability}.review.md"
-    if review_path.resolve() != expected_path.resolve() or not review_path.is_file():
-        raise StateError(f"review must be the existing Review Record at {expected_path}")
-    content = review_path.read_text(encoding="utf-8")
-    expected_header = f"# review: {args.module} / {args.capability}"
-    if expected_header not in content.splitlines():
-        raise StateError(f"review header must be {expected_header!r}")
+        raise StateError(
+            "mark-approved requires mode=full; reopen an MVP with "
+            "`retry --mode full` and take it through the reviewed path"
+        )
+    content = _require_artifact(
+        args.module,
+        args.capability,
+        Path(args.root),
+        "review",
+        args.review,
+        f"# review: {args.module} / {args.capability}",
+    )
     verdicts = re.findall(r"^- verdict:\s*(\S+)\s*$", content, re.MULTILINE)
     if verdicts != ["APPROVED"]:
         raise StateError("review must have exactly one APPROVED verdict")
@@ -321,36 +406,9 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
     rec.approved_at = _now_iso()
     if args.reviewer_run:
         rec.reviewer_run = args.reviewer_run
-    rec.review = str(review_path)
+    rec.review = str(Path(args.review))
     save_state(record, Path(args.root))
     _print(f"marked {args.module}/{args.capability} as fully_approved")
-    return 0
-
-
-def cmd_promote(args: argparse.Namespace) -> int:
-    """Owner-triggered: flip mode from mvp to full and re-dispatch reviewer.
-
-    Records a pending transition by setting mode=full and state back to
-    pending, expecting the reviewer path (mark-approved) to land next.
-    This CLI does not invoke the reviewer itself; the dispatcher does.
-    """
-    record = load_state(args.module, Path(args.root))
-    rec = _get_cap(record, args.capability)
-    if rec.state != "mvp_developed":
-        raise StateError(
-            f"promote requires state=mvp_developed, got state={rec.state!r}"
-        )
-    if rec.mode != "mvp":
-        raise StateError(
-            f"promote requires mode=mvp, got mode={rec.mode!r}"
-        )
-    rec.mode = "full"
-    rec.state = "pending"  # reviewer will mark-approved next
-    save_state(record, Path(args.root))
-    _print(
-        f"promoted {args.module}/{args.capability}: mode mvp -> full, "
-        f"state reset to pending awaiting reviewer"
-    )
     return 0
 
 
@@ -431,13 +489,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("mark-mvp", help="record Owner acceptance of an MVP")
     module_cap(sp)
     sp.add_argument("--manifest", default="")
-    sp.add_argument("--mode", default="")
 
     sp = sub.add_parser("mark-changes", help="reviewer rejects; developer iterates")
     module_cap(sp)
 
-    sp = sub.add_parser("retry", help="reopen changes_requested for another developer pass")
+    sp = sub.add_parser(
+        "retry",
+        help="reopen changes_requested, or an MVP with --mode full",
+    )
     module_cap(sp)
+    sp.add_argument(
+        "--mode",
+        choices=("full",),
+        default="",
+        help="required when reopening an mvp_developed capability",
+    )
 
     sp = sub.add_parser(
         "mark-approved", help="record Owner approval of an APPROVED review"
@@ -445,9 +511,6 @@ def build_parser() -> argparse.ArgumentParser:
     module_cap(sp)
     sp.add_argument("--reviewer-run", default="")
     sp.add_argument("--review", default="")
-
-    sp = sub.add_parser("promote", help="owner promotes mvp -> full")
-    module_cap(sp)
 
     sp = sub.add_parser("abandon", help="owner closes a capability")
     module_cap(sp)
@@ -471,7 +534,6 @@ _HANDLERS = {
     "mark-changes": cmd_mark_changes,
     "retry": cmd_retry,
     "mark-approved": cmd_mark_approved,
-    "promote": cmd_promote,
     "abandon": cmd_abandon,
     "show": cmd_show,
     "dependers-of": cmd_dependers_of,

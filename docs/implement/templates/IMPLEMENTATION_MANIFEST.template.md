@@ -32,6 +32,34 @@ finishes; dispatcher reads this before firing the reviewer.
 - risk notes: <e.g. chose to fail closed on missing upstream capability>
 - upstream state at dispatch: <state of each upstream capability consumed>
 
+## discovery
+
+REQUIRED when `mode: mvp`. An MVP is the foreword to the full
+implementation, not a throwaway: its code is disposable, but what it
+learned is what the full run inherits. A manifest without this section is
+rejected by `mark-mvp`.
+
+- question: the question this MVP was meant to answer
+  (e.g. does eth_getLogs survive a 10k block span, or must it split?)
+
+- answer: what actually happened
+  (e.g. stable to 8k blocks; above that it must shard, and the Card's
+       stale_tolerance is now wrong)
+
+- surprised: anything that did not match the Card or the contract
+  (e.g. the contract declares only RPC_TIMEOUT, but the node returns
+       execution_reverted — the error surface is wider than designed)
+
+- keep: assets the full run may inherit as-is
+  (e.g. modules/<m>/sharding.py's split algorithm;
+       tests/fixtures_rpc.py's three recorded chain responses)
+
+- discard: code the full run must NOT inherit
+  (e.g. every error path returns None; no timeout; no retry)
+
+- known_gaps: what the full run must build that this MVP did not
+  (e.g. 3 of the 4 declared error codes are unimplemented)
+
 # consumed by reviewer + dispatcher
 ```
 
@@ -41,5 +69,11 @@ Notes:
     signed declaration. Reviewer MUST verify by running
     `python -m tools.check_imports <module>` independently. A false
     declaration is grounds for `CHANGES_REQUESTED` with reason `boundary`.
-  - If `mode: mvp`, dispatcher records `mark-mvp` after Owner accepts the
-    result. If `mode: full`, dispatcher dispatches reviewer after checks pass.
+  - If `mode: mvp`, dispatcher records
+    `mark-mvp --manifest <path>` after Owner accepts the result; the CLI
+    rejects a manifest with no `## discovery`. If `mode: full`, dispatcher
+    dispatches reviewer after checks pass.
+  - `keep` / `discard` are the anti-leak pair. An MVP's code is never
+    reviewed, so it has no error handling, no timeouts and no edge cases;
+    inheriting it silently is how a prototype becomes production. Say
+    explicitly what carries over and what does not.

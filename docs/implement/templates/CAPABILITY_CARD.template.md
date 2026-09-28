@@ -44,8 +44,9 @@ Notes:
 
   - The `mode` field is the Owner's choice. Default `full`. If `mvp`, the
     reviewer is skipped — the developer's manifest stands and is recorded as
-    `mvp_developed`. To later promote, Owner triggers `promote` and the
-    reviewer runs on the unchanged implementation.
+    `mvp_developed`, which no other module may consume. If it turns out
+    another module needs it, Owner reopens it with
+    `retry <module> <cap> --mode full` and it goes through the reviewed path.
   - `errors[*].code` strings are stable identifiers; renaming is breaking.
   - `behavior.{unit, time, idempotent, ordering}` are machine-checked by
     `framework.architecture`; deviations raise `INVALID_METADATA`.

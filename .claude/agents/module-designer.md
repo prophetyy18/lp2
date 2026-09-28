@@ -24,6 +24,7 @@ You MAY read only:
   - `framework/architecture/__init__.py`                        (public API only)
   - `tools/implement/**`                                         (state machine + CLI)
   - `docs/implement/<your-module>/<capability>.design-blocker.md` (when revising a Card)
+  - `docs/implement/<your-module>/<capability>.manifest.md`     (when planning after an MVP)
   - `docs/implement/templates/CAPABILITY_CARD.template.md`       (Card format)
 
 You MUST NOT read:
@@ -77,6 +78,36 @@ approves its Card. Your job is the PLAN and Cards, not state writes.
     bootstrapped later by separate module-designer runs.
   - If the contract is missing a capability you need to plan for, stop
     and ask Owner to escalate to ac-designer.
+
+## Planning after an MVP (the discovery handoff)
+
+An MVP is the foreword to the full implementation. Its code is disposable;
+its **discovery** section is not. When the dispatcher reopens an
+`mvp_developed` capability with `retry --mode full`, you are dispatched
+before any developer is, and your job is to turn the MVP's Manifest into a
+Card the full run can be built from.
+
+Read the Manifest's `## discovery` section and produce a revised Card in
+which every one of the six fields is accounted for:
+
+  - `question` / `answer`  — carry the conclusion into the Card's
+    `notes`, and change the Card's plan if the answer contradicts it
+    (an MVP that proved the shape is wrong has earned its keep precisely
+    by saying so)
+  - `surprised` — anything that contradicts the contract is a design
+    blocker for ac-designer, not a Card edit. A Card edit would silently
+    widen the design; if the contract's error surface is wrong, escalate.
+  - `keep` — list these assets explicitly in the Card as inherited. The
+    full developer inherits named files, not "whatever the prototype left".
+  - `discard` — the Card must state plainly that these are thrown away,
+    so nobody inherits error handling that silently returns None
+  - `known_gaps` — every gap becomes a concrete item in the test plan or
+    the Card's required outputs
+
+The developer that follows works from **your Card**, not from reading the
+prototype and inferring its intent. That is the whole point of this step:
+the MVP ran in a different agent session whose memory is gone, so the Card
+is where the knowledge has to live.
 
 ## Handoff
 
