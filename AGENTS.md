@@ -151,9 +151,15 @@ so an interrupted run is never ambiguous between "not started" and
 The aggregated `module_state` is computed from per-capability states and
 written by the CLI on every save. Its six values, most conclusive first:
 `complete` (all consumable) → `partially_complete` (some consumable) →
-`blocked` (a reviewer named reasons work is owed) → `partial_mvp` (an
-unconsumable prototype exists) → `planned` (nothing started) →
-`abandoned` (everything closed).
+`rework` (a reviewer rejected something and named why; someone owes a
+fix) → `partial_mvp` (an unconsumable prototype exists) → `planned`
+(nothing started) → `abandoned` (everything closed).
+
+`rework` is deliberately *not* called "blocked". Nothing is waiting on
+anyone: the reason codes say what to fix, `retry` is available, and the
+work is actionable now. "Blocked" is what an unconsumable upstream looks
+like, which is a different condition and is reported by
+`state upstream`, not by this field.
 
 An interrupted developer or reviewer run does not create a new state. To
 resume, the dispatcher reads STATE, the approved Card, existing source and
@@ -199,6 +205,13 @@ Both transitions are recorded by the state CLI and neither is a hand-edit:
 validates a CHANGES_REQUESTED one plus its reason codes, and `mark-mvp`
 validates a Manifest with a `## discovery` section. All three refuse while
 a design blocker for the capability is open.
+
+`abandon` covers the fourth reviewer outcome, but distinguishes two cases
+that share the command: with `--review` it records a reviewer's `ABANDON`
+verdict (the work is fundamentally off-target, which may point at the Card
+rather than the code); without it, it is purely Owner's decision. The flag
+stays optional because closing a capability that was never reviewed is an
+ordinary thing for Owner to do.
 
 Promote mode skips the Card gate and dispatches reviewer on the existing
 implementation before the completion gate.

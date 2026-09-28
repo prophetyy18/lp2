@@ -94,12 +94,17 @@ every uncommitted change in the tree as if this run had made it.
     Do not change STATE before the Owner decides.
   - On Owner approval of an `APPROVED` verdict, call
     `python -m tools.implement.state mark-approved <module> <cap>
-    --review docs/implement/<module>/<cap>.review.md` (and `--reviewer-run`
-    when available).
-  - On Owner request for changes, call `mark-changes`. When the Owner asks
-    to continue the revision, call `retry` and re-dispatch developer with
-    the Review Record's reason codes.
-  - On Owner abandonment, call `abandon` and move to the next capability.
+    --review docs/implement/<module>/<cap>.review.md`.
+  - On Owner request for changes, call `mark-changes` with the same
+    `--review`; the CLI rejects a Record with no reason codes. When the
+    Owner asks to continue the revision, call `retry` and re-dispatch
+    developer with the Review Record's reason codes.
+  - On abandonment, call `abandon --review <record>` if the reviewer
+    returned an `ABANDON` verdict, and plain `abandon` if this is Owner's
+    decision alone. Pass `--review` whenever a review exists — it is the
+    only way STATE later shows that the work was condemned rather than
+    merely deprioritised — but do not invent one for a capability that was
+    never reviewed. Then move to the next capability.
 
 For MVP, call `mark-mvp --manifest <path>` only after Owner accepts the
 developer result. The CLI rejects a Manifest without a `## discovery`

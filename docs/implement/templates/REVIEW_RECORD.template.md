@@ -35,6 +35,10 @@ Notes:
   - `CHANGES_REQUESTED` must cite at least one reason code; `mark-changes`
     rejects a Record with an empty list, because a rejection the developer
     cannot act on sends the next developer back to guessing.
+  - `ABANDON` is a verdict the reviewer *recommends*, not one it decides:
+    the dispatcher calls `abandon --review <record>`, and Owner may decline
+    and ask for changes instead. Closing a capability that was never
+    reviewed is an ordinary Owner decision and takes a plain `abandon`.
   - `boundary: ISSUE` is special: a real cross-module import is a hard
     rule break, not a stylistic call. Reject unconditionally.
   - Reviewer MUST run `python -m tools.check_imports <module>` itself;

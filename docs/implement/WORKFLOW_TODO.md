@@ -147,4 +147,24 @@ Still open from the same review (P1, not started):
       `blocked` value added for rejected work. The test suite now checks
       every state pair maps to a real label, which is what let the old
       default survive unnoticed.
-- [ ] `--reviewer-run` has no defined source.
+- [x] The reviewer's `ABANDON` verdict was write-only, and `--reviewer-run`
+      was never read at all. The `ABANDON` verdict was documented in
+      reviewer.md and the Record template, but no command consumed it, so a
+      review that condemned a capability left only a bare `abandoned` in
+      STATE — indistinguishable from the Owner changing their mind, which
+      matters because the two point at different things (a bad Card vs a
+      scheduling change). `abandon` now takes an optional `--review`: with
+      it, the ABANDON verdict is validated and the path recorded; without
+      it, the closure is plainly an Owner decision. Optional on purpose —
+      closing a never-reviewed `pending` capability is ordinary and must not
+      require inventing a review. `reviewer_run` was deleted outright: it
+      was written, serialised, read back into the dataclass, and consumed by
+      nothing, and the Review Record already carries the reviewer model.
+- [x] `blocked` was the wrong word for a rejected module, and said so. In
+      workflow tooling "blocked" means waiting on something external — an
+      approval, a person, a dependency. But this state means a reviewer
+      named reason codes and someone owes a fix: nothing is waiting, `retry`
+      is available, and the work is actionable now. The condition that
+      genuinely *is* blocked — an upstream that is not `fully_approved` — is
+      a different one, reported by `state upstream`, not by this field.
+      Renamed to `rework`.

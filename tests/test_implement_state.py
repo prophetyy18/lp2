@@ -501,6 +501,54 @@ class StateCLITests(unittest.TestCase):
             _ALLOWED["mvp_developed"], frozenset({"pending", "abandoned"})
         )
 
+    # --- abandon: Owner decision vs reviewer ABANDON verdict ---------------
+
+    def test_abandon_without_a_review_is_an_owner_decision(self) -> None:
+        self._seed("alpha", "alpha.one")
+        rc, out = self._run("--root", str(self.root), "abandon", "alpha", "alpha.one")
+        self.assertEqual(rc, 0)
+        self.assertIn("Owner decision", out)
+        self.assertEqual(load_state("alpha", self.root).capabilities["alpha.one"].review, "")
+
+    def test_abandon_records_a_reviewer_abandon_verdict(self) -> None:
+        """Otherwise a review that condemned the work is indistinguishable
+        from the Owner simply changing their mind."""
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "ABANDON", "scope")
+        rc, out = self._run(
+            "--root", str(self.root), "abandon", "alpha", "alpha.one",
+            "--review", str(review),
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("ABANDON verdict", out)
+        rec = load_state("alpha", self.root)
+        self.assertEqual(rec.capabilities["alpha.one"].state, "abandoned")
+        self.assertEqual(rec.capabilities["alpha.one"].review, str(review))
+
+    def test_abandon_rejects_a_review_with_a_different_verdict(self) -> None:
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "APPROVED")
+        rc, out = self._run(
+            "--root", str(self.root), "abandon", "alpha", "alpha.one",
+            "--review", str(review),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("ABANDON", out)
+        self.assertNotEqual(
+            load_state("alpha", self.root).capabilities["alpha.one"].state, "abandoned"
+        )
+
+    def test_abandon_stays_legal_from_fully_approved(self) -> None:
+        """An Owner may close a capability that already worked."""
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "APPROVED")
+        self._run(
+            "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
+            "--review", str(review),
+        )
+        rc, _ = self._run("--root", str(self.root), "abandon", "alpha", "alpha.one")
+        self.assertEqual(rc, 0)
+
     def test_abandon_is_terminal(self) -> None:
         self._seed("alpha", "alpha.one", mode="full")
         rc, _ = self._run("--root", str(self.root), "abandon", "alpha", "alpha.one")
@@ -539,19 +587,19 @@ class ModuleStateAggregationTests(unittest.TestCase):
         recs = [CapabilityRecord(state=s) for s in states]
         return compute_module_state(recs)
 
-    def test_every_rejected_capability_is_blocked_not_partial_mvp(self) -> None:
+    def test_every_rejected_capability_is_rework_not_partial_mvp(self) -> None:
         # the misclassification: an MVP label for work that has none
-        self.assertEqual(self._state("changes_requested"), "blocked")
+        self.assertEqual(self._state("changes_requested"), "rework")
         self.assertEqual(
-            self._state("changes_requested", "changes_requested"), "blocked"
+            self._state("changes_requested", "changes_requested"), "rework"
         )
 
-    def test_rejected_alongside_other_work_is_blocked(self) -> None:
+    def test_rejected_alongside_other_work_is_rework(self) -> None:
         self.assertEqual(
-            self._state("pending", "changes_requested"), "blocked"
+            self._state("pending", "changes_requested"), "rework"
         )
         self.assertEqual(
-            self._state("mvp_developed", "changes_requested"), "blocked"
+            self._state("mvp_developed", "changes_requested"), "rework"
         )
 
     def test_rejected_alongside_an_approved_capability_is_partially_complete(self) -> None:

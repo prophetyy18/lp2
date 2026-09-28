@@ -80,7 +80,7 @@ class CapabilityState(str, Enum):
 class ModuleState(str, Enum):
     PLANNED = "planned"
     PARTIAL_MVP = "partial_mvp"
-    BLOCKED = "blocked"
+    REWORK = "rework"
     PARTIALLY_COMPLETE = "partially_complete"
     COMPLETE = "complete"
     ABANDONED = "abandoned"
@@ -92,7 +92,6 @@ class CapabilityRecord:
     mode: str = "full"  # mvp | full
     mvp_at: str = ""
     approved_at: str = ""
-    reviewer_run: str = ""
     manifest: str = ""
     review: str = ""
 
@@ -102,8 +101,6 @@ class CapabilityRecord:
             out["mvp_at"] = self.mvp_at
         if self.approved_at:
             out["approved_at"] = self.approved_at
-        if self.reviewer_run:
-            out["reviewer_run"] = self.reviewer_run
         if self.manifest:
             out["manifest"] = self.manifest
         if self.review:
@@ -117,7 +114,6 @@ class CapabilityRecord:
             mode=str(data.get("mode", "full")),
             mvp_at=str(data.get("mvp_at", "")),
             approved_at=str(data.get("approved_at", "")),
-            reviewer_run=str(data.get("reviewer_run", "")),
             manifest=str(data.get("manifest", "")),
             review=str(data.get("review", "")),
         )
@@ -203,7 +199,7 @@ def compute_module_state(records: Iterable[CapabilityRecord]) -> str:
         return ModuleState.PARTIALLY_COMPLETE.value
     if CapabilityState.CHANGES_REQUESTED.value in states:
         # a reviewer said work is owed and named why
-        return ModuleState.BLOCKED.value
+        return ModuleState.REWORK.value
     if CapabilityState.MVP_DEVELOPED.value in states:
         return ModuleState.PARTIAL_MVP.value
     # only pending and/or abandoned, mixed: work is planned, not started
@@ -439,8 +435,6 @@ def cmd_mark_changes(args: argparse.Namespace) -> int:
     _require_verdict(args.module, args.capability, content, "CHANGES_REQUESTED")
     codes = _require_reason_codes(args.module, args.capability, content)
     rec.state = "changes_requested"
-    if args.reviewer_run:
-        rec.reviewer_run = args.reviewer_run
     rec.review = str(Path(args.review))
     save_state(record, Path(args.root))
     _print(
@@ -551,8 +545,6 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
             raise StateError(f"review score {score} must be exactly one OK")
     rec.state = "fully_approved"
     rec.approved_at = _now_iso()
-    if args.reviewer_run:
-        rec.reviewer_run = args.reviewer_run
     rec.review = str(Path(args.review))
     save_state(record, Path(args.root))
     _print(f"marked {args.module}/{args.capability} as fully_approved")
@@ -560,12 +552,45 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
 
 
 def cmd_abandon(args: argparse.Namespace) -> int:
+    """Close a capability. Two different things share this command.
+
+    Owner decision: the Owner looked at it and does not want it. Always
+    legal from any non-terminal state, including `fully_approved`.
+
+    Reviewer verdict: the reviewer returned `ABANDON`, meaning the
+    implementation is fundamentally off-target rather than a fixable detail.
+    Pass `--review` so the Record is validated and its path recorded --
+    otherwise a review that recommended closing a capability is
+    indistinguishable, in STATE, from the Owner simply changing their mind,
+    and that difference is the whole reason the verdict exists.
+
+    `--review` stays optional: abandoning a `pending` capability that was
+    never reviewed is an ordinary Owner decision and must not require
+    inventing a review to justify it.
+    """
     record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
     _validate_transition(rec.state, "abandoned")
+    if args.review:
+        content = _require_artifact(
+            args.module,
+            args.capability,
+            Path(args.root),
+            "review",
+            args.review,
+            f"# review: {args.module} / {args.capability}",
+        )
+        _require_verdict(args.module, args.capability, content, "ABANDON")
+        rec.review = str(Path(args.review))
     rec.state = "abandoned"
     save_state(record, Path(args.root))
-    _print(f"abandoned {args.module}/{args.capability}")
+    if args.review:
+        _print(
+            f"abandoned {args.module}/{args.capability} on the reviewer's "
+            f"ABANDON verdict (record at {args.review})"
+        )
+    else:
+        _print(f"abandoned {args.module}/{args.capability} by Owner decision")
     return 0
 
 
@@ -747,7 +772,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("mark-changes", help="reviewer rejects; developer iterates")
     module_cap(sp)
-    sp.add_argument("--reviewer-run", default="")
     sp.add_argument("--review", default="")
 
     sp = sub.add_parser(
@@ -766,11 +790,15 @@ def build_parser() -> argparse.ArgumentParser:
         "mark-approved", help="record Owner approval of an APPROVED review"
     )
     module_cap(sp)
-    sp.add_argument("--reviewer-run", default="")
     sp.add_argument("--review", default="")
 
     sp = sub.add_parser("abandon", help="owner closes a capability")
     module_cap(sp)
+    sp.add_argument(
+        "--review",
+        default="",
+        help="the reviewer's ABANDON Record; omit when this is purely an Owner decision",
+    )
 
     sp = sub.add_parser("show", help="print state for module or capability")
     sp.add_argument("module")
