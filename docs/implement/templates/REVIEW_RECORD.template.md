@@ -24,9 +24,17 @@ after auditing developer's diff + manifest + Capability Card.
 
 Notes:
 
+  - The four score names above are the canonical ones. `mark-approved` and
+    `mark-changes` match them literally, so do not abbreviate them here.
+    The reviewer's *handoff line* to the dispatcher uses a deliberately
+    different compact spelling — `c= b= t= q=` — because that line is the
+    ≤100-word summary Owner reads. Two surfaces, two spellings, no mixing.
   - Any single ISSUE forces verdict = `CHANGES_REQUESTED`. Use `ABANDON` only
     when the implementation is fundamentally off-target (not a fixable
     detail).
+  - `CHANGES_REQUESTED` must cite at least one reason code; `mark-changes`
+    rejects a Record with an empty list, because a rejection the developer
+    cannot act on sends the next developer back to guessing.
   - `boundary: ISSUE` is special: a real cross-module import is a hard
     rule break, not a stylistic call. Reject unconditionally.
   - Reviewer MUST run `python -m tools.check_imports <module>` itself;

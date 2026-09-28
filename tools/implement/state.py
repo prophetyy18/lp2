@@ -77,6 +77,7 @@ class CapabilityState(str, Enum):
 class ModuleState(str, Enum):
     PLANNED = "planned"
     PARTIAL_MVP = "partial_mvp"
+    BLOCKED = "blocked"
     PARTIALLY_COMPLETE = "partially_complete"
     COMPLETE = "complete"
     ABANDONED = "abandoned"
@@ -177,29 +178,33 @@ def save_state(record: ModuleRecord, root: Path | None = None) -> Path:
 
 
 def compute_module_state(records: Iterable[CapabilityRecord]) -> str:
-    """Aggregate capability states into one module_state string."""
+    """Aggregate capability states into one module_state string.
+
+    Order matters: the first matching case wins, and it runs from most to
+    least conclusive. The old version fell through to `partial_mvp` for
+    anything it did not recognise, so a module whose every capability had
+    been rejected by a reviewer was reported as holding MVPs -- a label that
+    has since stopped meaning "work in progress" at all, since an MVP is no
+    longer a path to completion.
+    """
     states = {r.state for r in records}
-    if not states:
-        return ModuleState.PLANNED.value
-    if states == {CapabilityState.PENDING.value}:
+    if not states or states == {CapabilityState.PENDING.value}:
+        # nothing declared, or nothing built yet
         return ModuleState.PLANNED.value
     if states == {CapabilityState.ABANDONED.value}:
         return ModuleState.ABANDONED.value
     if states == {CapabilityState.FULLY_APPROVED.value}:
         return ModuleState.COMPLETE.value
-    if CapabilityState.FULLY_APPROVED.value in states and CapabilityState.ABANDONED.value not in states:
-        # some approved, none abandoned, but others still in flight
-        if all(
-            s in (CapabilityState.FULLY_APPROVED.value, CapabilityState.ABANDONED.value)
-            for s in states
-        ):
-            return ModuleState.COMPLETE.value
-        return ModuleState.PARTIALLY_COMPLETE.value
-    if CapabilityState.MVP_DEVELOPED.value in states and CapabilityState.FULLY_APPROVED.value not in states:
-        return ModuleState.PARTIAL_MVP.value
     if CapabilityState.FULLY_APPROVED.value in states:
+        # some consumable, the rest not yet
         return ModuleState.PARTIALLY_COMPLETE.value
-    return ModuleState.PARTIAL_MVP.value
+    if CapabilityState.CHANGES_REQUESTED.value in states:
+        # a reviewer said work is owed and named why
+        return ModuleState.BLOCKED.value
+    if CapabilityState.MVP_DEVELOPED.value in states:
+        return ModuleState.PARTIAL_MVP.value
+    # only pending and/or abandoned, mixed: work is planned, not started
+    return ModuleState.PLANNED.value
 
 
 def _now_iso() -> str:

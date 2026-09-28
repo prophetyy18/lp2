@@ -110,8 +110,29 @@ Still open from the same review (P1, not started):
 - [ ] `dependers-of` cannot answer its own question; the dispatcher's
       YELLOW/RED upstream gate has no tool. `archctl depends` already reports
       `[OK]` / `[?]` per dependency and is the missing primitive.
-- [ ] Four review scores have three spellings across AGENTS.md, dispatcher.md,
-      reviewer.md and the template; `mark-approved` regex-matches only one.
+- [x] The four review scores were three spellings; the real split was two
+      surfaces. Inside the Review Record the names are
+      `contract_conformance / boundary / test_coverage /
+      implementation_quality`, and that spelling was already consistent
+      across the template, reviewer.md and the `mark-approved` validator —
+      so it stays, and is now the single constant the docs point at. The
+      drift was in the *handoff one-liner*: reviewer.md told the reviewer to
+      emit `contract= boundary= test= quality=`, while the dispatcher, the
+      decision-prompt template and AGENTS.md all told the Owner
+      `c= b= t= q=`. reviewer.md now emits the compact form, and both
+      surfaces say why they differ — the Record is machine-validated, the
+      handoff is the ≤100-word summary Owner reads. The handoff also now
+      carries the reason codes, which the dispatcher needs on a rejection.
+- [x] `compute_module_state` fell through to `partial_mvp` for anything it
+      did not recognise, so a module whose every capability had been
+      rejected was reported as holding MVPs — a label that had just stopped
+      meaning "work in progress", since an MVP is no longer a path to
+      completion. It also contained an unreachable branch (a
+      `fully_approved`-and-`abandoned` case guarded by a condition that had
+      already excluded `abandoned`). Rewritten most-conclusive-first, and a
+      `blocked` value added for rejected work. The test suite now checks
+      every state pair maps to a real label, which is what let the old
+      default survive unnoticed.
 - [ ] `compute_module_state` misclassifies all-`changes_requested` as
       `partial_mvp` and contains an unreachable branch.
 - [ ] `--reviewer-run` has no defined source.

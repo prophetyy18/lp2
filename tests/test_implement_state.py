@@ -531,5 +531,65 @@ class StateCLITests(unittest.TestCase):
         self.assertEqual(rc, 1)
 
 
+class ModuleStateAggregationTests(unittest.TestCase):
+    """The aggregate label must not claim more than the capabilities show."""
+
+    @staticmethod
+    def _state(*states: str) -> str:
+        recs = [CapabilityRecord(state=s) for s in states]
+        return compute_module_state(recs)
+
+    def test_every_rejected_capability_is_blocked_not_partial_mvp(self) -> None:
+        # the misclassification: an MVP label for work that has none
+        self.assertEqual(self._state("changes_requested"), "blocked")
+        self.assertEqual(
+            self._state("changes_requested", "changes_requested"), "blocked"
+        )
+
+    def test_rejected_alongside_other_work_is_blocked(self) -> None:
+        self.assertEqual(
+            self._state("pending", "changes_requested"), "blocked"
+        )
+        self.assertEqual(
+            self._state("mvp_developed", "changes_requested"), "blocked"
+        )
+
+    def test_rejected_alongside_an_approved_capability_is_partially_complete(self) -> None:
+        # one consumable capability is the more useful fact than the rejection
+        self.assertEqual(
+            self._state("fully_approved", "changes_requested"),
+            "partially_complete",
+        )
+
+    def test_abandoned_mixed_with_pending_is_planned(self) -> None:
+        # not partial_mvp, and not abandoned: the owner closed one, work remains
+        self.assertEqual(self._state("abandoned", "pending"), "planned")
+
+    def test_mvp_alone_or_mixed_is_partial_mvp(self) -> None:
+        self.assertEqual(self._state("mvp_developed"), "partial_mvp")
+        self.assertEqual(self._state("mvp_developed", "pending"), "partial_mvp")
+        self.assertEqual(self._state("mvp_developed", "abandoned"), "partial_mvp")
+
+    def test_approved_alongside_anything_else_is_partially_complete(self) -> None:
+        for other in ("pending", "mvp_developed", "abandoned"):
+            self.assertEqual(
+                self._state("fully_approved", other), "partially_complete"
+            )
+
+    def test_uniform_states(self) -> None:
+        self.assertEqual(self._state("pending"), "planned")
+        self.assertEqual(self._state("fully_approved"), "complete")
+        self.assertEqual(self._state("abandoned"), "abandoned")
+
+    def test_every_capability_state_maps_to_some_label(self) -> None:
+        """No state may fall through to a default, which is how the bug survived."""
+        from tools.implement.state import VALID_STATES, ModuleState
+
+        for a in VALID_STATES:
+            for b in VALID_STATES:
+                label = self._state(a, b)
+                self.assertIn(label, {m.value for m in ModuleState})
+
+
 if __name__ == "__main__":
     unittest.main()

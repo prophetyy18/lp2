@@ -149,7 +149,11 @@ so an interrupted run is never ambiguous between "not started" and
 "finished, awaiting review".
 
 The aggregated `module_state` is computed from per-capability states and
-written by the CLI on every save.
+written by the CLI on every save. Its six values, most conclusive first:
+`complete` (all consumable) → `partially_complete` (some consumable) →
+`blocked` (a reviewer named reasons work is owed) → `partial_mvp` (an
+unconsumable prototype exists) → `planned` (nothing started) →
+`abandoned` (everything closed).
 
 An interrupted developer or reviewer run does not create a new state. To
 resume, the dispatcher reads STATE, the approved Card, existing source and

@@ -108,9 +108,16 @@ When done, return the Review Record path:
 
 ```
 reviewer: <module>/<capability> verdict=<VERDICT>. record at <path>.
-          scores: contract=<OK|ISSUE> boundary=<OK|ISSUE> test=<OK|ISSUE> quality=<OK|ISSUE>
-          reason_codes: [<list>]
+          scores: c=<OK|ISSUE> b=<OK|ISSUE> t=<OK|ISSUE> q=<OK|ISSUE>
+          reasons: [<reason codes, required when not APPROVED>]
 ```
+
+Two spellings, on purpose. Inside the Review Record the four scores are
+`contract_conformance / boundary / test_coverage / implementation_quality`
+— those long names are what `mark-approved` validates, so they are fixed.
+This handoff line is the Owner-facing summary and uses the compact
+`c= / b= / t= / q=` form that the dispatcher's prompt template shows Owner.
+Do not mix the two: the Record uses long names, the handoff uses short ones.
 
 If design blocks review, return:
 
