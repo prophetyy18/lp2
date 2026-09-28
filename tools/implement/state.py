@@ -4,24 +4,18 @@ Reads and writes `docs/implement/<module>/STATE.yaml`. Validates every
 transition against the closed state set. Computes the aggregated
 `module_state` from per-capability states.
 
-State transition table (mechanical, enforced here):
-
-    from \\ to          pending  mvp_developed  fully_approved  changes_requested  abandoned
-    pending              -          yes             yes             yes              yes
-    mvp_developed        -            -             yes             yes              yes
-    fully_approved     yes            -               -             yes              yes
-    changes_requested  yes            -               -               -              yes
-    abandoned            -            -               -               -                -
-
-Yes = the `mark-*` / `promote` / `abandon` subcommands accept the
-transition. The dispatcher (not this CLI) is responsible for firing the
-right command at the right moment; this module records what happened.
+Capabilities start at pending via register. mark-mvp accepts a pending MVP;
+mark-approved accepts a full capability with an APPROVED Review Record.
+promote reopens an MVP as pending/full, and retry reopens changes_requested
+as pending. abandoned is terminal. The dispatcher is responsible for Owner
+gates; this CLI records their outcome.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import re
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
@@ -226,8 +220,37 @@ def _get_cap(record: ModuleRecord, cap: str) -> CapabilityRecord:
 # --- CLI subcommands -------------------------------------------------------
 
 
+def cmd_register(args: argparse.Namespace) -> int:
+    """Create a pending record for a capability owned by this module."""
+    module_path = Path("architecture/modules") / args.module / "module.yaml"
+    if not module_path.is_file():
+        raise StateError(f"module declaration not found: {module_path}")
+    module_data = yaml.safe_load(module_path.read_text(encoding="utf-8")) or {}
+    contract_names = module_data.get("provides_contracts", [])
+    declared: set[str] = set()
+    for name in contract_names:
+        contract_path = Path("architecture/contracts") / f"{name}.yaml"
+        if not contract_path.is_file():
+            raise StateError(f"contract not found: {contract_path}")
+        contract_data = yaml.safe_load(contract_path.read_text(encoding="utf-8")) or {}
+        declared.update(cap["id"] for cap in contract_data.get("provides", []))
+    if args.capability not in declared:
+        raise StateError(
+            f"capability {args.capability!r} is not provided by module {args.module!r}"
+        )
+
+    root = Path(args.root)
+    record = load_state(args.module, root)
+    if args.capability in record.capabilities:
+        raise StateError(f"capability {args.capability!r} is already registered")
+    record.capabilities[args.capability] = CapabilityRecord(mode=args.mode)
+    save_state(record, root)
+    _print(f"registered {args.module}/{args.capability} as pending (mode={args.mode})")
+    return 0
+
+
 def cmd_mark_mvp(args: argparse.Namespace) -> int:
-    record = load_state(args.module)
+    record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
     _validate_transition(rec.state, "mvp_developed")
     # Mode is set at planning time on the capability record; do not let
@@ -245,32 +268,61 @@ def cmd_mark_mvp(args: argparse.Namespace) -> int:
     rec.mvp_at = _now_iso()
     if args.manifest:
         rec.manifest = args.manifest
-    save_state(record)
+    save_state(record, Path(args.root))
     _print(f"marked {args.module}/{args.capability} as mvp_developed (mode=mvp)")
     return 0
 
 
 def cmd_mark_changes(args: argparse.Namespace) -> int:
-    record = load_state(args.module)
+    record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
     _validate_transition(rec.state, "changes_requested")
     rec.state = "changes_requested"
-    save_state(record)
+    save_state(record, Path(args.root))
     _print(f"marked {args.module}/{args.capability} as changes_requested")
     return 0
 
 
+def cmd_retry(args: argparse.Namespace) -> int:
+    """Reopen a rejected capability for the next developer pass."""
+    record = load_state(args.module, Path(args.root))
+    rec = _get_cap(record, args.capability)
+    _validate_transition(rec.state, "pending")
+    rec.state = "pending"
+    save_state(record, Path(args.root))
+    _print(f"reopened {args.module}/{args.capability} as pending")
+    return 0
+
+
 def cmd_mark_approved(args: argparse.Namespace) -> int:
-    record = load_state(args.module)
+    record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
     _validate_transition(rec.state, "fully_approved")
+    if rec.mode != "full":
+        raise StateError("mark-approved requires mode=full; promote an MVP first")
+    if not args.review:
+        raise StateError("mark-approved requires --review with an APPROVED Review Record")
+    review_path = Path(args.review)
+    expected_path = Path(args.root) / args.module / f"{args.capability}.review.md"
+    if review_path.resolve() != expected_path.resolve() or not review_path.is_file():
+        raise StateError(f"review must be the existing Review Record at {expected_path}")
+    content = review_path.read_text(encoding="utf-8")
+    expected_header = f"# review: {args.module} / {args.capability}"
+    if expected_header not in content.splitlines():
+        raise StateError(f"review header must be {expected_header!r}")
+    verdicts = re.findall(r"^- verdict:\s*(\S+)\s*$", content, re.MULTILINE)
+    if verdicts != ["APPROVED"]:
+        raise StateError("review must have exactly one APPROVED verdict")
+    for score in ("contract_conformance", "boundary", "test_coverage", "implementation_quality"):
+        values = re.findall(rf"^\s*{score}:\s*(\S+)", content, re.MULTILINE)
+        if values != ["OK"]:
+            raise StateError(f"review score {score} must be exactly one OK")
     rec.state = "fully_approved"
     rec.approved_at = _now_iso()
     if args.reviewer_run:
         rec.reviewer_run = args.reviewer_run
-    if args.review:
-        rec.review = args.review
-    save_state(record)
+    rec.review = str(review_path)
+    save_state(record, Path(args.root))
     _print(f"marked {args.module}/{args.capability} as fully_approved")
     return 0
 
@@ -282,7 +334,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
     pending, expecting the reviewer path (mark-approved) to land next.
     This CLI does not invoke the reviewer itself; the dispatcher does.
     """
-    record = load_state(args.module)
+    record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
     if rec.state != "mvp_developed":
         raise StateError(
@@ -294,7 +346,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
         )
     rec.mode = "full"
     rec.state = "pending"  # reviewer will mark-approved next
-    save_state(record)
+    save_state(record, Path(args.root))
     _print(
         f"promoted {args.module}/{args.capability}: mode mvp -> full, "
         f"state reset to pending awaiting reviewer"
@@ -303,17 +355,17 @@ def cmd_promote(args: argparse.Namespace) -> int:
 
 
 def cmd_abandon(args: argparse.Namespace) -> int:
-    record = load_state(args.module)
+    record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
     _validate_transition(rec.state, "abandoned")
     rec.state = "abandoned"
-    save_state(record)
+    save_state(record, Path(args.root))
     _print(f"abandoned {args.module}/{args.capability}")
     return 0
 
 
 def cmd_show(args: argparse.Namespace) -> int:
-    record = load_state(args.module)
+    record = load_state(args.module, Path(args.root))
     if args.capability:
         rec = record.capabilities.get(args.capability)
         if rec is None:
@@ -372,7 +424,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("module")
         p.add_argument("capability")
 
-    sp = sub.add_parser("mark-mvp", help="developer marks MVP done (pending|mvp_developed)")
+    sp = sub.add_parser("register", help="register a declared capability as pending")
+    module_cap(sp)
+    sp.add_argument("--mode", choices=("mvp", "full"), default="full")
+
+    sp = sub.add_parser("mark-mvp", help="record Owner acceptance of an MVP")
     module_cap(sp)
     sp.add_argument("--manifest", default="")
     sp.add_argument("--mode", default="")
@@ -380,8 +436,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("mark-changes", help="reviewer rejects; developer iterates")
     module_cap(sp)
 
+    sp = sub.add_parser("retry", help="reopen changes_requested for another developer pass")
+    module_cap(sp)
+
     sp = sub.add_parser(
-        "mark-approved", help="reviewer approves (reviewer must call this)"
+        "mark-approved", help="record Owner approval of an APPROVED review"
     )
     module_cap(sp)
     sp.add_argument("--reviewer-run", default="")
@@ -407,8 +466,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 _HANDLERS = {
+    "register": cmd_register,
     "mark-mvp": cmd_mark_mvp,
     "mark-changes": cmd_mark_changes,
+    "retry": cmd_retry,
     "mark-approved": cmd_mark_approved,
     "promote": cmd_promote,
     "abandon": cmd_abandon,

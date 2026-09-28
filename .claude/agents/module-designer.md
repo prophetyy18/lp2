@@ -21,6 +21,8 @@ You MAY read only:
   - `modules/<your-module>/**`                                  (existing source, if any)
   - `framework/architecture/__init__.py`                        (public API only)
   - `tools/implement/**`                                         (state machine + CLI)
+  - `docs/implement/<your-module>/<capability>.design-blocker.md` (when revising a Card)
+  - `docs/implement/templates/CAPABILITY_CARD.template.md`       (Card format)
 
 You MUST NOT read:
 
@@ -46,9 +48,9 @@ Write to `docs/implement/<your-module>/`:
 
   - `PLAN.md`                       — capability breakdown, dependency order, gate plan
   - `<capability>.card.md`         — one Capability Card per capability (use the template)
-  - `STATE.yaml` (seeded via `python -m tools.implement.state show`) —
-    initially empty; capabilities added when developer / reviewer fire
-    `mark-mvp` / `mark-approved`. Your job is the PLAN, not the state writes.
+
+The dispatcher registers each capability in `STATE.yaml` after the Owner
+approves its Card. Your job is the PLAN and Cards, not state writes.
 
 ## PLAN.md must contain (in this order)
 

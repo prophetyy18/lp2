@@ -143,16 +143,29 @@ class StateCLITests(unittest.TestCase):
 
     def test_mark_approved_works_from_pending(self) -> None:
         self._seed("alpha", "alpha.one", mode="full")
-        rc, out = self._run("--root", str(self.root), "mark-approved", "alpha", "alpha.one")
+        review = self.root / "alpha" / "alpha.one.review.md"
+        review.write_text(
+            "# review: alpha / alpha.one\n"
+            "   contract_conformance: OK\n"
+            "   boundary: OK\n"
+            "   test_coverage: OK\n"
+            "   implementation_quality: OK\n"
+            "- verdict: APPROVED\n",
+            encoding="utf-8",
+        )
+        rc, out = self._run(
+            "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
+            "--review", str(review),
+        )
         self.assertEqual(rc, 0)
         self.assertIn("fully_approved", out)
 
-    def test_mark_approved_works_from_mvp(self) -> None:
+    def test_mark_approved_requires_promotion_from_mvp(self) -> None:
         self._seed("alpha", "alpha.one", mode="mvp")
         self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one")
         rc, out = self._run("--root", str(self.root), "mark-approved", "alpha", "alpha.one")
-        self.assertEqual(rc, 0)
-        self.assertIn("fully_approved", out)
+        self.assertEqual(rc, 1)
+        self.assertIn("promote", out)
 
     def test_promote_requires_mvp_state(self) -> None:
         self._seed("alpha", "alpha.one", mode="full")

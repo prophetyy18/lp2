@@ -27,6 +27,8 @@ You MAY read only:
   - `modules/<module>/**` (the implementation under review)
   - `tests/test_<module>_<capability>.py` (the developer's tests)
   - `framework/architecture/__init__.py` (public API only)
+  - `docs/implement/templates/DESIGN_BLOCKER.template.md` (only for a design blocker)
+  - `docs/implement/templates/REVIEW_RECORD.template.md` (Review Record format)
 
 You MUST NOT read:
 
@@ -51,7 +53,7 @@ following `templates/REVIEW_RECORD.template.md`. The record MUST contain:
 
   - **4 independent scores**, each `OK` or `ISSUE`:
     1. `contract_conformance` — signature, schema refs, errors, behavior tags
-       all match the contract. The capability's `kind` is in
+       match the contract, with no undeclared public behavior. The capability's `kind` is in
        `{operation, event, data}`. Inputs and outputs use the declared
        schema refs.
     2. `boundary` — no cross-module imports in `modules/<module>/`. The
@@ -61,23 +63,32 @@ following `templates/REVIEW_RECORD.template.md`. The record MUST contain:
     3. `test_coverage` — normal / boundary / invalid / failure paths are
        all present. Tests assert observable behavior, not implementation
        internals.
-    4. `spec_drift` — the implementation does NOT expose behavior the
-       Capability Card did not promise. If the developer added fields,
-       changed names, or weakened guarantees without escalating to
-       ac-designer, this is `ISSUE`.
+    4. `implementation_quality` — error handling is explicit; timeouts and
+       retries are bounded where relevant; resources are released; code is
+       readable and has useful types. A material defect is `ISSUE`; do not
+       demand machinery irrelevant to this capability.
   - **One overall verdict**: `APPROVED` (all 4 OK) | `CHANGES_REQUESTED`
     (any ISSUE) | `ABANDON` (issue is fundamental).
   - **One reason code per ISSUE**: pick one of
-    `signature | schema | behavior | boundary | test | scope`.
+    `signature | schema | behavior | boundary | test | scope | quality`.
   - **At most 2 lines of notes** explaining each ISSUE.
+
+If the approved contract or Card is itself inconsistent or cannot express
+the intended behavior, stop the review and write a Design Blocker at
+`docs/implement/<module>/<capability>.design-blocker.md` using the template.
+Return `DESIGN_BLOCKED` with its path. This is not a developer defect and is
+not a `CHANGES_REQUESTED` verdict.
 
 ## Hard rules
 
   - Do NOT propose a fix. The developer decides how to fix; you decide
     whether the implementation is acceptable.
   - Do NOT modify any code or test file. Your only writes are the Review Record
-    and (optionally) running the import scanner.
+    or, when design blocks review, the Design Blocker.
   - Do NOT consult other Review Records. Reason from the contract + manifest + diff.
+  - If resuming after interruption, review the full current implementation
+    again and replace only your own incomplete Review Record. A partial
+    Record is not a verdict.
   - If the Implementation Manifest's `boundary: OK` checkbox is wrong (you
     found a real cross-module import), score `boundary: ISSUE` AND set
     overall verdict `CHANGES_REQUESTED` regardless of other scores.
@@ -90,12 +101,18 @@ When done, return the Review Record path:
 
 ```
 reviewer: <module>/<capability> verdict=<VERDICT>. record at <path>.
-          scores: contract=<OK|ISSUE> boundary=<OK|ISSUE> test=<OK|ISSUE> spec=<OK|ISSUE>
+          scores: contract=<OK|ISSUE> boundary=<OK|ISSUE> test=<OK|ISSUE> quality=<OK|ISSUE>
           reason_codes: [<list>]
 ```
 
-The dispatcher reads the verdict and fires `mark-approved` or
-`mark-changes` accordingly. Do NOT call those CLI commands yourself.
+If design blocks review, return:
+
+```
+reviewer: <module>/<capability> DESIGN_BLOCKED. blocker at <path>.
+```
+
+The dispatcher presents the verdict to Owner and records the Owner's
+decision. Do NOT call state CLI commands yourself.
 
 ## Model
 

@@ -41,5 +41,5 @@ Notes:
     signed declaration. Reviewer MUST verify by running
     `python -m tools.check_imports <module>` independently. A false
     declaration is grounds for `CHANGES_REQUESTED` with reason `boundary`.
-  - If `mode: mvp`, dispatcher records `mark-mvp` directly after the
-    manifest lands. If `mode: full`, dispatcher fires reviewer.
+  - If `mode: mvp`, dispatcher records `mark-mvp` after Owner accepts the
+    result. If `mode: full`, dispatcher dispatches reviewer after checks pass.

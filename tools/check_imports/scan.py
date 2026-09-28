@@ -221,7 +221,7 @@ def scan_repo(modules_root: Path = Path("modules")) -> list[Finding]:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m tools.check_imports")
-    p.add_argument("module", nargs="", help="module name to scan (default: scan every module)")
+    p.add_argument("module", nargs="?", help="module name to scan (default: scan every module)")
     p.add_argument("--modules-root", default="modules", help="root of modules/ tree")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     return p

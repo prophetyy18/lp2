@@ -9,17 +9,17 @@ after auditing developer's diff + manifest + Capability Card.
 - reviewer model: MiniMax-M3[1m]
 - reviewed: <ISO timestamp>
 - scores (4 项,每项 OK / ISSUE):
-   contract_conformance: <OK | ISSUE>   # signature / schema refs / errors / behavior tags all match
+   contract_conformance: <OK | ISSUE>   # contract and Card match; no undeclared public behavior
    boundary:             <OK | ISSUE>   # python -m tools.check_imports <module> clean
    test_coverage:        <OK | ISSUE>   # normal / boundary / invalid / failure paths covered
-   spec_drift:           <OK | ISSUE>   # no behavior exposed beyond the Capability Card
+   implementation_quality: <OK | ISSUE> # errors, bounded I/O, cleanup, readable code, useful types
 - verdict: <APPROVED | CHANGES_REQUESTED | ABANDON>
-- reason codes: [<signature | schema | behavior | boundary | test | scope>]
+- reason codes: [<signature | schema | behavior | boundary | test | scope | quality>]
 - notes (≤ 2 lines per ISSUE):
    - <issue>: <one-line explanation>
    - <issue>: <one-line explanation>
 
-# consumed by dispatcher; dispatcher fires mark-approved / mark-changes / abandon
+# consumed by dispatcher; Owner decides before dispatcher updates STATE
 ```
 
 Notes:

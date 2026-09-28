@@ -1,6 +1,7 @@
 # Decision Prompt templates
 
-The ONLY thing the Owner sees in normal operation. Four forms.
+The ONLY thing the Owner sees in normal operation. Three normal forms and
+one exceptional design blocker form.
 
 ## MVP path — after developer
 
@@ -9,17 +10,10 @@ The ONLY thing the Owner sees in normal operation. Four forms.
  Mark as mvp_developed? [y / not-yet / abandon]
 ```
 
-## Full path — after developer, before reviewer
-
-```
-✓ <module>/<capability> developer done. dispatch reviewer? [y / changes / abandon]
-   manifest: docs/implement/<module>/<capability>.manifest.md
-```
-
 ## Full path — after reviewer
 
 ```
-✓ <module>/<capability> reviewer: <VERDICT>  scores: c=<X> b=<X> t=<X> s=<X>
+✓ <module>/<capability> reviewer: <VERDICT>  scores: c=<X> b=<X> t=<X> q=<X>
  Approve and mark fully_approved? [y / changes / abandon]
 ```
 
@@ -27,7 +21,14 @@ The ONLY thing the Owner sees in normal operation. Four forms.
 
 ```
 ⚠ promoting <module>/<capability> from MVP. existing tests + manifest unchanged.
-  Dispatch reviewer on same impl? [y / redo / abandon]
+  Reviewer will run on the same implementation; result follows review gate.
+```
+
+## Design blocker — exceptional path
+
+```
+⚠ <module>/<capability> DESIGN_BLOCKED (<contract|card>): <one-line conflict>.
+  Decision needed: <one-line decision>; blocker: docs/implement/<module>/<capability>.design-blocker.md
 ```
 
 ---

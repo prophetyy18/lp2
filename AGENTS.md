@@ -9,7 +9,7 @@ defines how agents should work.
 
 | Role | When active | What it does |
 |---|---|---|
-| **Owner** | always (you) | one-line decisions at the three gates; nothing else |
+| **Owner** | always (you) | one-line decisions at the capability gates; nothing else |
 | **ac-designer** | architecture changes | edits `architecture/contracts/`, `architecture/modules/`; never reads implementation |
 | **module-designer** | planning a module | writes `docs/implement/<module>/PLAN.md` + Capability Cards; never writes code |
 | **developer** | implementing a capability | writes `modules/<module>/**` + tests + Implementation Manifest; one capability per spawn |
@@ -19,6 +19,8 @@ The dispatcher (main session) mediates between Owner and the four
 subagents; it is the only role that talks to you. ac-designer is a
 prefix-invoked role; module-designer / developer / reviewer are spawned
 subagents (see `.claude/agents/<role>.md` for each role's prompt).
+Only the dispatcher calls the state CLI; developer and reviewer report
+artifacts and findings without changing STATE.yaml.
 
 ## 2. Two modes per capability
 
@@ -33,6 +35,10 @@ subagents (see `.claude/agents/<role>.md` for each role's prompt).
 Owner decides the mode when the Capability Card is prepared. Default `full`.
 A `mvp_developed` capability can later be promoted: Owner triggers
 `promote`, reviewer runs on the unchanged implementation.
+Full-mode review keeps four scores: contract conformance (including spec
+drift), boundary, test coverage, and implementation quality. Quality covers
+explicit errors, bounded timeouts/retries where relevant, cleanup,
+readability, and useful types; it does not require unrelated machinery.
 
 ## 3. Three isolation layers (module boundary is hard)
 
@@ -58,7 +64,7 @@ written only by `python -m tools.implement.state <cmd>`. The five states
 
 States:
 
-  - `pending`              planned, no implementation
+  - `pending`              registered; implementation or review may be in progress
   - `mvp_developed`        MVP done (does not count as done)
   - `changes_requested`    reviewer rejected
   - `fully_approved`       reviewer approved (counts as done)
@@ -67,19 +73,36 @@ States:
 The aggregated `module_state` is computed from per-capability states and
 written by the CLI on every save.
 
-## 5. Three gates per capability (Owner intervenes three times max)
+An interrupted developer or reviewer run does not create a new state. To
+resume, the dispatcher reads STATE, the approved Card, existing source and
+tests, the Manifest, and any Review Record. Incomplete developer work goes
+back to developer; incomplete review goes back to reviewer. A complete review
+awaiting Owner's decision returns to the review gate, provided the code has
+not changed since review. Never approve from a partial Record or reset files
+merely because a run was interrupted. `changes_requested` can be reopened
+through `python -m tools.implement.state retry <module> <cap>`.
+
+If developer or reviewer finds a contradiction in the approved contract or
+Card, it writes `<capability>.design-blocker.md`, returns `DESIGN_BLOCKED`,
+and stops the affected work. This is not `changes_requested`; STATE remains
+unchanged. Dispatcher routes contract/boundary/dependency issues to
+ac-designer and Card/plan issues to module-designer, obtains Owner approval
+for changed design, records the resolution, and resumes implementation.
+Reviewer audits again after a design change. An open Design Blocker takes
+priority over ordinary interruption recovery.
+
+## 5. Two gates per capability (Owner intervenes twice in the normal path)
 
   1. **Card gate.** Owner reads the Capability Card (~10 lines) and
      chooses: `go / redo / abandon`. This decides mode.
-  2. **Developer gate (full mode only).** Owner reads the
-     Implementation Manifest path and chooses: `dispatch reviewer / not-yet
-     / abandon`.
-  3. **Review gate (full mode only).** Owner reads the Review Record
-     one-liner (`verdict=APPROVED scores=c=OK b=OK t=OK s=OK`) and chooses:
-     `approve / changes / abandon`.
+  2. **Completion gate.** In full mode, the dispatcher checks the Manifest
+     and automatically dispatches reviewer. Owner then reads the Review
+     Record one-liner (`verdict=APPROVED scores=c=OK b=OK t=OK q=OK`) and
+     chooses `approve / changes / abandon`. In MVP mode, Owner reads the
+     Manifest result and chooses `accept / changes / abandon`.
 
-MVP mode skips gates 2 and 3 (one gate total). Promote mode skips gate 1
-and adds an additional reviewer dispatch.
+Promote mode skips the Card gate and dispatches reviewer on the existing
+implementation before the completion gate.
 
 In all cases, the Owner-facing prompt is a single line of ≤ 100 words.
 Background and rationale stay in the agent prompts and CLI output, never in
@@ -120,5 +143,6 @@ Those are separate surfaces; this file only defines how agents work.
   - "What may this module depend on?" → `python -m framework.architecture.cli depends <module>`
   - "Who is affected if X changes?" → `python -m framework.architecture.cli impact <contract>`
   - "What is the state of capability X?" → `python -m tools.implement.state show <module> <cap>`
+  - "Register an approved Capability Card" → `python -m tools.implement.state register <module> <cap> --mode <full|mvp>`
   - "Does module M violate boundaries?" → `python -m tools.check_imports <module>`
   - "Run all checks" → `python -m unittest discover -s tests -t . && python -m unittest framework.architecture.tests.test_framework`

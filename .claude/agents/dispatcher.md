@@ -43,8 +43,11 @@ For each capability about to be dispatched:
 2. **Capability Card is current.** Check `docs/implement/<module>/<cap>.card.md`
    exists; if not, route to module-designer first.
 
-3. **Mode is set on the record.** `python -m tools.implement.state show <module> <cap>`
-   must show `mode: mvp` or `mode: full`. Default `full` is acceptable.
+3. **Mode is set on the record.** After Owner approves the Card, run
+   `python -m tools.implement.state register <module> <cap> --mode <mvp|full>`.
+   Use the mode approved on the Card. Then `show <module> <cap>` must show
+   `state: pending` and the selected mode. If already registered, inspect
+   the existing record; do not reset it.
 
 If any check fails, surface to Owner with a one-line prompt; do NOT spawn.
 
@@ -54,26 +57,76 @@ If any check fails, surface to Owner with a one-line prompt; do NOT spawn.
   - Run `python -m framework.architecture.cli validate`.
   - Run `python -m tools.check_imports <module>`.
   - Run `python -m pytest tests/test_<module>_<cap>.py`.
-  - If mode=`full`: spawn reviewer (model `MiniMax-M3[1m]`) with the
-    developer diff + manifest + card.
+  - If mode=`full` and checks pass: immediately spawn reviewer (model
+    `MiniMax-M3[1m]`) with the developer diff + manifest + card.
   - If mode=`mvp`: skip reviewer. Go directly to the Owner prompt.
 
 ## What you must do after reviewer returns
 
-  - Parse verdict from the Review Record:
-     - `APPROVED` → call `python -m tools.implement.state mark-approved
-       <module> <cap>` (with `--reviewer-run` and `--review` flags).
-     - `CHANGES_REQUESTED` → call `python -m tools.implement.state mark-changes
-       <module> <cap>`. Re-dispatch developer with the Review Record's
-       reason codes.
-     - `ABANDON` → call `python -m tools.implement.state abandon <module>
-       <cap>`. Move to the next capability.
-  - Show the Owner a one-line prompt. Never summarize the Review Record
-     in prose unless the Owner asks.
+  - Read the Review Record and show the Owner its verdict and scores.
+    Do not change STATE before the Owner decides.
+  - On Owner approval of an `APPROVED` verdict, call
+    `python -m tools.implement.state mark-approved <module> <cap>
+    --review docs/implement/<module>/<cap>.review.md` (and `--reviewer-run`
+    when available).
+  - On Owner request for changes, call `mark-changes`. When the Owner asks
+    to continue the revision, call `retry` and re-dispatch developer with
+    the Review Record's reason codes.
+  - On Owner abandonment, call `abandon` and move to the next capability.
+
+For MVP, call `mark-mvp` with `--manifest` only after Owner accepts the
+developer result. Never mark an MVP complete when only a manifest exists.
+
+## Resuming an interrupted capability
+
+On resume, read `state show <module> <cap>`, the Card, the current source and
+test changes (including untracked files), and any Manifest, Review Record,
+or Design Blocker. Resolve an open Design Blocker before dispatching either
+developer or reviewer.
+Do not register the capability again or reset existing work.
+
+  - `pending` with no complete Manifest: re-dispatch developer with the Card,
+    existing files and a note to continue and finish the Manifest.
+  - Review interrupted or its Record incomplete: re-dispatch reviewer on
+    the full current implementation; reviewer replaces its incomplete Record.
+  - Review Record complete but Owner decision interrupted: present the gate
+    again. If source or tests changed after review, or this cannot be
+    established, re-dispatch reviewer first.
+  - Otherwise, `pending` with a complete Manifest: re-run the developer gate
+    checks. If full, dispatch reviewer using the current full diff and
+    Manifest. If MVP, resume the Owner completion gate.
+  - `changes_requested`: preserve the Review Record. On Owner request to
+    revise, call `retry` and dispatch developer with its reason codes.
+  - `mvp_developed`, `fully_approved`, or `abandoned`: do not replay a gate.
+    Follow only an explicit new Owner action such as `promote`.
+
+An interrupted agent run is not a review verdict or an Owner decision.
+
+## When implementation exposes a design blocker
+
+If developer or reviewer returns `DESIGN_BLOCKED`, read its
+`<cap>.design-blocker.md` and keep STATE unchanged. Do not treat the blocker
+as a failed implementation or a review verdict. Show Owner one line with
+the affected contract/Card clause and decision needed.
+
+  - Public contract, module boundary, or dependency issue: send only the
+    blocker summary and architecture paths to ac-designer. Follow its normal
+    proposal and Owner decision before changing architecture YAML.
+  - Capability Card or internal plan issue with unchanged public contract:
+    dispatch module-designer to revise the Card and PLAN. Return the revised
+    Card to Owner for approval before continuing implementation.
+  - Existing design already answers the case: record the clarification in
+    the blocker's `resolution` field and resume the interrupted role.
+
+After any design change, record the resolution and changed design paths in
+the blocker. Refresh affected Cards, obtain Owner approval for changed Cards,
+then dispatch developer to reconcile its implementation and Manifest. Any
+Review Record from before the change is stale; reviewer must audit again.
+Never make developer or reviewer silently widen the approved design.
 
 ## The Owner-facing prompt (the only thing Owner sees)
 
-Three forms, all ≤ 2 lines:
+Three normal forms, all ≤ 2 lines:
 
 ### MVP path:
 ```
@@ -81,23 +134,20 @@ Three forms, all ≤ 2 lines:
  Mark as mvp_developed? [y / not-yet / abandon]
 ```
 
-### Full path — post-developer:
-```
-✓ <module>/<cap> developer done. dispatch reviewer? [y / changes / abandon]
-   manifest: docs/implement/<module>/<cap>.manifest.md
-```
-
 ### Full path — post-reviewer:
 ```
-✓ <module>/<cap> reviewer: <VERDICT>  scores: c=<X> b=<X> t=<X> s=<X>
+✓ <module>/<cap> reviewer: <VERDICT>  scores: c=<X> b=<X> t=<X> q=<X>
  Approve and mark fully_approved? [y / changes / abandon]
 ```
 
 ### Promote (MVP → full):
 ```
 ⚠ promoting <module>/<cap> from MVP. existing tests + manifest unchanged.
-  Dispatch reviewer on same impl? [y / redo / abandon]
+  Reviewer will run on the same implementation; result follows review gate.
 ```
+
+On `DESIGN_BLOCKED`, use the exceptional prompt in
+`docs/implement/templates/DECISION_PROMPT.template.md`.
 
 **Never** show the Owner prose longer than ~100 words in a single message.
 Background / rationale / history lives in the agent prompts and CLI output,
@@ -108,9 +158,6 @@ not in Owner-facing messages.
   - You NEVER bypass the state CLI. No hand-edits to STATE.yaml.
   - You NEVER mark-approved without a Review Record's APPROVED verdict.
   - You NEVER recommend skipping the reviewer for `full`-mode work.
-  - You MAY allow Owner to waive the reviewer for an explicit reason (e.g.
-    "this is a doc-only change"); record the waiver in the Implementation
-    Manifest's `notes` section, not by skipping the state CLI.
   - You MAY batch multiple capability dispatches in one turn ONLY if they
     are independent (different modules, no shared upstream). Otherwise one
     capability per turn.
@@ -126,14 +173,3 @@ For each spawn, your `Agent(...)` call must include:
     substituted for module / capability / paths
   - The prompt must NOT include any other module's source paths
   - The prompt must NOT include the role files of any other role
-
-## When to defer to ac-designer
-
-If a developer or reviewer surfaces a contract ambiguity / drift:
-  - Stop the implementation loop.
-  - Run `ac-designer` on the contract change.
-  - After ac-designer updates YAML, re-dispatch module-designer to refresh
-    the affected Capability Cards.
-  - Then resume the developer / reviewer cycle.
-
-Do NOT let developer or reviewer silently widen or reinterpret a contract.
