@@ -155,10 +155,18 @@ Reopening an MVP for real work is not a developer step on its own:
   4. Only then dispatch developer, who works from the revised Card.
 
 Step 3 is not optional. The MVP ran in an agent session that no longer
-exists; the Card is the only place its findings can live. Step 1 is not
-optional either: `retry` refuses if the MVP Manifest is gone, because
-reopening with no discovery would silently turn a documented decision back
-into a guess.
+exists; the Card is the only place its findings can live.
+
+**Step 1 can degrade.** `retry` archives the MVP Manifest, but it proceeds
+with a `WARNING` if the record has no manifest path or the file is gone —
+`retry` is the way out of a stuck capability, and there is no CLI remedy
+for refusing it (`register` rejects an already-registered capability and
+there is no unregister, so the only escape would be hand-editing
+STATE.yaml). If you see that warning, the reopen handoff has **nothing to
+read**: module-designer must rebuild the Card from the existing source and
+the current architecture instead of folding in a discovery, and that Card
+goes to Owner for approval as though it were a first plan. Do not skip
+step 3 in that case — it matters more, not less.
 
 The prototype's code is still in the tree at step 4. developer.md's "If
 your tree already has code" section tells the developer what to do with it;

@@ -330,8 +330,13 @@ class StateCLITests(unittest.TestCase):
         rec = load_state("alpha", self.root)
         self.assertEqual(rec.capabilities["alpha.one"].manifest, "")
 
-    def test_retry_from_mvp_refuses_when_the_manifest_is_gone(self) -> None:
-        """Silently reopening with no discovery is the failure this guards against."""
+    def test_retry_from_mvp_warns_but_proceeds_when_the_manifest_is_gone(self) -> None:
+        """A lost bookkeeping field must not become a dead end.
+
+        Refusing here would leave `abandon` and a hand-edit of STATE.yaml as
+        the only escapes, and hand-editing is what the policy forbids. So the
+        reopen proceeds and says loudly that the handoff has nothing to read.
+        """
         self._seed("alpha", "alpha.one", mode="mvp")
         m = self._manifest("alpha", "alpha.one")
         self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one", "--manifest", str(m))
@@ -339,10 +344,29 @@ class StateCLITests(unittest.TestCase):
         rc, out = self._run(
             "--root", str(self.root), "retry", "alpha", "alpha.one", "--mode", "full"
         )
-        self.assertEqual(rc, 1)
-        self.assertIn("is gone", out)
+        self.assertEqual(rc, 0)
+        self.assertIn("WARNING", out)
+        self.assertIn("no longer exists", out)
+        self.assertIn("rebuild the Card", out)
+        rec = load_state("alpha", self.root).capabilities["alpha.one"]
+        self.assertEqual(rec.state, "pending")
+        self.assertEqual(rec.mode, "full")
+
+    def test_retry_from_mvp_warns_when_no_manifest_was_ever_recorded(self) -> None:
+        """A hand-edited or pre-manifest STATE.yaml lands here; name the field."""
+        from tools.implement.state import load_state as _load
+
+        rec = _load("alpha", self.root)
+        rec.capabilities["alpha.one"] = CapabilityRecord(state="mvp_developed", mode="mvp")
+        save_state(rec, self.root)
+        rc, out = self._run(
+            "--root", str(self.root), "retry", "alpha", "alpha.one", "--mode", "full"
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("no manifest path", out)
+        self.assertIn("WARNING", out)
         self.assertEqual(
-            load_state("alpha", self.root).capabilities["alpha.one"].state, "mvp_developed"
+            load_state("alpha", self.root).capabilities["alpha.one"].state, "pending"
         )
 
     def test_retry_from_mvp_refuses_to_clobber_an_existing_archive(self) -> None:

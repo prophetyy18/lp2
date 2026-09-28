@@ -444,26 +444,55 @@ def cmd_mark_changes(args: argparse.Namespace) -> int:
     return 0
 
 
-def _archive_mvp_manifest(module: str, capability: str, given: str) -> Path:
+def _archive_mvp_manifest(module: str, capability: str, given: str) -> Path | None:
     """Preserve an MVP Manifest before the full pass overwrites it.
 
     The full developer writes its Manifest to the same canonical path, so
     without this the `## discovery` section — the only durable record of
     what the spike found, and what the revised Card is built from — would be
     silently destroyed by the very pass it was written for.
+
+    Returns the archive path, or None when there is nothing to archive.
+
+    A missing or unrecorded Manifest degrades rather than refuses. `retry` is
+    the way *out* of a stuck capability, and there is no CLI remedy for a
+    refusal here: `register` rejects an already-registered capability and
+    there is no unregister, so refusing would leave the only escape as a
+    hand-edit of STATE.yaml — which the policy forbids. A lost bookkeeping
+    field is a smaller problem than that. The cost is that the reopen path
+    loses its handoff, so this returns loudly and the caller says so.
+
+    An archive that already exists *is* a refusal: overwriting it would
+    destroy an earlier spike's findings permanently and silently.
     """
+    if not given.strip():
+        _print(
+            f"WARNING: {module}/{capability} is mvp_developed but its record "
+            f"carries no manifest path, so there is nothing to archive. The "
+            f"reopen handoff has no discovery to read: module-designer must "
+            f"rebuild the Card from the existing source and the current "
+            f"architecture, and that Card must go to Owner for approval as if "
+            f"it were a first plan."
+        )
+        return None
     src = Path(given)
     if not src.is_file():
-        raise StateError(
-            f"cannot reopen {module}/{capability}: its MVP Manifest {src} is gone. "
-            f"That file's discovery section is the only record of what the spike "
-            f"found; recreate it, or abandon the capability and re-plan it."
+        _print(
+            f"WARNING: {module}/{capability} records its MVP Manifest at {src}, "
+            f"which no longer exists, so there is nothing to archive. The "
+            f"reopen handoff has no discovery to read: module-designer must "
+            f"rebuild the Card from the existing source and the current "
+            f"architecture, and that Card must go to Owner for approval as if "
+            f"it were a first plan."
         )
+        return None
     dest = src.with_name(f"{capability}.mvp-manifest.md")
     if dest.exists():
         raise StateError(
-            f"an archived MVP Manifest already exists at {dest}; refusing to "
-            f"overwrite it. Inspect it before reopening {module}/{capability}."
+            f"refusing to reopen {module}/{capability}: an archived MVP Manifest "
+            f"already exists at {dest}, and archiving again would overwrite an "
+            f"earlier spike's discovery permanently. Inspect {dest}, move it "
+            f"aside if it is stale, then retry."
         )
     dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
     return dest
@@ -484,7 +513,10 @@ def cmd_retry(args: argparse.Namespace) -> int:
 
     Reopening from `mvp_developed` first archives the MVP Manifest to
     `<cap>.mvp-manifest.md` and clears `rec.manifest`, because the full pass
-    writes to the same path and would otherwise erase the discovery.
+    writes to the same path and would otherwise erase the discovery. If the
+    Manifest is unrecorded or gone, the reopen still proceeds and says so:
+    this is the way out of a stuck capability, and there is no CLI remedy
+    for refusing it.
     """
     record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)

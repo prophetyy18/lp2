@@ -76,8 +76,16 @@ Still open from the same review (P1, not started):
       the full developer writes — so the full Manifest overwrote the
       `## discovery` section by the pass it was written for, and STATE then
       pointed at a file with no discovery in it. `retry` now archives to
-      `<cap>.mvp-manifest.md`, clears `rec.manifest`, refuses if the MVP
-      Manifest has gone, and refuses to clobber an existing archive.
+      `<cap>.mvp-manifest.md` and clears `rec.manifest`. A missing or
+      unrecorded Manifest degrades to a loud `WARNING` rather than a
+      refusal: `retry` is the way *out* of a stuck capability, and since
+      `register` rejects an already-registered capability and there is no
+      unregister, refusing would have left hand-editing STATE.yaml — which
+      the policy forbids — as the only escape. The warning tells the
+      dispatcher the handoff has nothing to read, so module-designer
+      rebuilds the Card from source and Owner approves it as a first plan.
+      An archive that already exists *is* a refusal: re-archiving would
+      overwrite an earlier spike's findings permanently and silently.
       Second, developer.md only knew about *interrupted* runs; it had no
       rule for a tree holding an unreviewed prototype, so the three
       reasonable reactions (extend it / ignore it / be confused by its
