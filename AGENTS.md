@@ -171,6 +171,15 @@ for changed design, records the resolution, and resumes implementation.
 Reviewer audits again after a design change. An open Design Blocker takes
 priority over ordinary interruption recovery.
 
+Because STATE deliberately has no blocker state, the file is the whole
+record, and the state CLI enforces it: `mark-mvp`, `mark-changes` and
+`mark-approved` all refuse while `<capability>.design-blocker.md` exists, so
+a fixed-but-forgotten blocker cannot silently keep a capability from ever
+completing. Resolution is recorded in the file's `resolution:` field, then
+the file is **renamed** to `<capability>.design-blocker.resolved.md` — never
+deleted, so the reasoning stays readable. `retry` is not gated, so a blocker
+cannot deadlock the work it is blocking.
+
 ## 5. Two gates per capability (Owner intervenes twice in the normal path)
 
   1. **Card gate.** Owner reads the Capability Card (~10 lines) and

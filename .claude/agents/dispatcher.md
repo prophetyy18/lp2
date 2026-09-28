@@ -160,10 +160,17 @@ the affected contract/Card clause and decision needed.
     the blocker's `resolution` field and resume the interrupted role.
 
 After any design change, record the resolution and changed design paths in
-the blocker. Refresh affected Cards, obtain Owner approval for changed Cards,
-then dispatch developer to reconcile its implementation and Manifest. Any
-Review Record from before the change is stale; reviewer must audit again.
-Never make developer or reviewer silently widen the approved design.
+the blocker, then **rename it to `<cap>.design-blocker.resolved.md`**. That
+rename is the resolution: the state CLI refuses `mark-mvp`, `mark-changes`
+and `mark-approved` while the open `<cap>.design-blocker.md` exists, so a
+blocker that is fixed but left on disk would silently keep the capability
+from ever completing. `retry` is deliberately not gated, so the path out is
+never deadlocked.
+
+Then refresh affected Cards, obtain Owner approval for changed Cards, and
+dispatch developer to reconcile its implementation and Manifest. Any Review
+Record from before the change is stale; reviewer must audit again. Never
+make developer or reviewer silently widen the approved design.
 
 ## The Owner-facing prompt (the only thing Owner sees)
 

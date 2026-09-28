@@ -137,6 +137,43 @@ class StateCLITests(unittest.TestCase):
         )
         return target
 
+    def _review(
+        self,
+        module: str,
+        cap: str,
+        verdict: str = "APPROVED",
+        reasons: str | None = None,
+        scores: tuple[str, ...] = ("OK", "OK", "OK", "OK"),
+    ) -> Path:
+        """Write a Review Record that the state CLI will accept."""
+        target = self.root / module / f"{cap}.review.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        reason_line = (
+            f"- reason codes: [{reasons}]\n" if reasons is not None else ""
+        )
+        target.write_text(
+            f"# review: {module} / {cap}\n"
+            f"   contract_conformance: {scores[0]}\n"
+            f"   boundary: {scores[1]}\n"
+            f"   test_coverage: {scores[2]}\n"
+            f"   implementation_quality: {scores[3]}\n"
+            f"{reason_line}"
+            f"- verdict: {verdict}\n",
+            encoding="utf-8",
+        )
+        return target
+
+    def _blocker(self, module: str, cap: str) -> Path:
+        target = self.root / module / f"{cap}.design-blocker.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            f"# design blocker: {module} / {cap}\n\n"
+            f"the contract declares only RPC_TIMEOUT; the node returns\n"
+            f"execution_reverted, so the error surface is wider than designed.\n",
+            encoding="utf-8",
+        )
+        return target
+
     def _run(self, *argv: str) -> tuple[int, str]:
         from tools.implement import state
 
@@ -324,16 +361,138 @@ class StateCLITests(unittest.TestCase):
     def test_retry_from_changes_requested_leaves_the_manifest_alone(self) -> None:
         """Only the MVP reopen archives; a rejected full pass has no spike to keep."""
         self._seed("alpha", "alpha.one", mode="full")
-        review = self.root / "alpha" / "alpha.one.review.md"
-        review.write_text(
-            "# review: alpha / alpha.one\n- verdict: CHANGES_REQUESTED\n",
-            encoding="utf-8",
-        )
+        review = self._review("alpha", "alpha.one", "CHANGES_REQUESTED", "quality")
         self._run(
             "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
+            "--review", str(review),
         )
         rc, _ = self._run("--root", str(self.root), "retry", "alpha", "alpha.one")
         self.assertEqual(rc, 0)
+        self.assertFalse((self.root / "alpha" / "alpha.one.mvp-manifest.md").exists())
+
+    # --- mark-changes must record what it rejected, and why -----------------
+
+    def test_mark_changes_records_the_review_path(self) -> None:
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "CHANGES_REQUESTED", "boundary")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
+            "--review", str(review),
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("boundary", out)
+        rec = load_state("alpha", self.root)
+        self.assertEqual(rec.capabilities["alpha.one"].review, str(review))
+
+    def test_mark_changes_requires_a_review(self) -> None:
+        self._seed("alpha", "alpha.one")
+        rc, out = self._run("--root", str(self.root), "mark-changes", "alpha", "alpha.one")
+        self.assertEqual(rc, 1)
+        self.assertIn("--review", out)
+
+    def test_mark_changes_rejects_an_approved_review(self) -> None:
+        """Recording a rejection on top of an APPROVED record would be nonsense."""
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "APPROVED", "quality")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
+            "--review", str(review),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("CHANGES_REQUESTED", out)
+
+    def test_mark_changes_requires_at_least_one_reason(self) -> None:
+        """A rejection the developer cannot act on sends them back to guessing."""
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "CHANGES_REQUESTED", reasons="")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
+            "--review", str(review),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("reason code", out)
+
+    def test_mark_changes_rejects_an_unknown_reason_code(self) -> None:
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "CHANGES_REQUESTED", "vibes")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
+            "--review", str(review),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("vibes", out)
+
+    # --- an open design blocker outranks every gate -------------------------
+
+    def test_mark_approved_is_refused_while_a_design_blocker_is_open(self) -> None:
+        """A stale blocker must not be able to coexist with fully_approved."""
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "APPROVED")
+        self._blocker("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
+            "--review", str(review),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("design blocker", out)
+        self.assertEqual(
+            load_state("alpha", self.root).capabilities["alpha.one"].state, "pending"
+        )
+
+    def test_mark_mvp_is_refused_while_a_design_blocker_is_open(self) -> None:
+        self._seed("alpha", "alpha.one", mode="mvp")
+        manifest = self._manifest("alpha", "alpha.one")
+        self._blocker("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-mvp", "alpha", "alpha.one",
+            "--manifest", str(manifest),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("design blocker", out)
+
+    def test_mark_changes_is_refused_while_a_design_blocker_is_open(self) -> None:
+        """A blocker is not a review outcome, so it does not become one."""
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "CHANGES_REQUESTED", "quality")
+        self._blocker("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
+            "--review", str(review),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("design blocker", out)
+
+    def test_a_resolved_blocker_no_longer_gates(self) -> None:
+        """Resolution is recorded by renaming the file, so the check is the file."""
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "APPROVED")
+        blocker = self._blocker("alpha", "alpha.one")
+        blocker.rename(blocker.with_name("alpha.one.design-blocker.resolved.md"))
+        rc, _ = self._run(
+            "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
+            "--review", str(review),
+        )
+        self.assertEqual(rc, 0)
+
+    def test_retry_is_not_gated_by_a_blocker(self) -> None:
+        """The check must not deadlock the path out of a blocker.
+
+        A blocker discovered after a rejection leaves the record in
+        `changes_requested`; retry is how that work resumes, so retry is
+        deliberately not gated.
+        """
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one", "CHANGES_REQUESTED", "schema")
+        self._run(
+            "--root", str(self.root), "mark-changes", "alpha", "alpha.one",
+            "--review", str(review),
+        )
+        self._blocker("alpha", "alpha.one")
+        rc, _ = self._run("--root", str(self.root), "retry", "alpha", "alpha.one")
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            load_state("alpha", self.root).capabilities["alpha.one"].state, "pending"
+        )
 
     def test_mvp_only_exits_to_pending_or_abandoned(self) -> None:
         from tools.implement.state import _ALLOWED

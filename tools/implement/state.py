@@ -266,6 +266,79 @@ def _require_artifact(
     return content
 
 
+# Reason codes a Review Record may cite. Defined once so the template, the
+# reviewer prompt and this validator cannot drift apart.
+REASON_CODES: tuple[str, ...] = (
+    "signature",
+    "schema",
+    "behavior",
+    "boundary",
+    "test",
+    "scope",
+    "quality",
+)
+
+
+def _require_verdict(module: str, capability: str, content: str, expected: str) -> None:
+    verdicts = re.findall(r"^- verdict:\s*(\S+)\s*$", content, re.MULTILINE)
+    if verdicts != [expected]:
+        raise StateError(
+            f"review of {module} / {capability} must carry exactly one "
+            f"{expected} verdict, got {verdicts or 'none'}"
+        )
+
+
+def _require_reason_codes(module: str, capability: str, content: str) -> list[str]:
+    """A rejection the developer cannot act on is not a decision.
+
+    `changes_requested` used to record nothing at all, which left the
+    dispatcher's documented instruction — "dispatch developer with its reason
+    codes" — pointing at a file nothing had ever recorded.
+    """
+    lines = re.findall(r"^-\s*reason codes:\s*\[(.*?)\]\s*$", content, re.MULTILINE)
+    if len(lines) != 1:
+        raise StateError(
+            f"review of {module} / {capability} must carry exactly one "
+            f"`- reason codes: [...]` line, got {len(lines)}"
+        )
+    codes = [c.strip() for c in lines[0].split(",") if c.strip()]
+    if not codes:
+        raise StateError(
+            f"a CHANGES_REQUESTED review must cite at least one reason code "
+            f"from {list(REASON_CODES)}; an unexplained rejection sends the "
+            f"next developer back to guessing"
+        )
+    unknown = [c for c in codes if c not in REASON_CODES]
+    if unknown:
+        raise StateError(
+            f"unknown reason code(s) {unknown} in {module} / {capability}; "
+            f"expected any of {list(REASON_CODES)}"
+        )
+    return codes
+
+
+def _refuse_if_blocked(module: str, capability: str, root: Path, command: str) -> None:
+    """Refuse a gate transition while a design blocker for it is still open.
+
+    A design blocker is deliberately not a state: it leaves STATE unchanged
+    and is resolved by routing to ac-designer or module-designer. That is
+    right, but it also meant nothing stopped a stale blocker from coexisting
+    with `fully_approved`. The blocker file is the only record there is, so
+    the file is what the gate checks.
+    """
+    path = root / module / f"{capability}.design-blocker.md"
+    if not path.is_file():
+        return
+    resolved = path.with_name(f"{capability}.design-blocker.resolved.md")
+    raise StateError(
+        f"{command} refused: an open design blocker exists at {path}. A design "
+        f"blocker is not a review outcome and does not change STATE, so this "
+        f"check is the only thing keeping a stale one from coexisting with a "
+        f"completion. Resolve the design, record what changed, then rename the "
+        f"file to {resolved.name} and re-run."
+    )
+
+
 # --- CLI subcommands -------------------------------------------------------
 
 
@@ -321,6 +394,7 @@ def cmd_mark_mvp(args: argparse.Namespace) -> int:
         f"# manifest: {args.module} / {args.capability}",
         required_block="## discovery",
     )
+    _refuse_if_blocked(args.module, args.capability, Path(args.root), "mark-mvp")
     rec.state = "mvp_developed"
     rec.mode = "mvp"
     rec.mvp_at = _now_iso()
@@ -335,12 +409,36 @@ def cmd_mark_mvp(args: argparse.Namespace) -> int:
 
 
 def cmd_mark_changes(args: argparse.Namespace) -> int:
+    """Record a reviewer's rejection, with the reasons behind it.
+
+    `changes_requested` used to be a bare state flip: no Review Record path,
+    no reasons. The dispatcher was told to "re-dispatch developer with its
+    reason codes" while nothing recorded any, so the next developer was sent
+    back to guessing what the reviewer had objected to.
+    """
     record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
     _validate_transition(rec.state, "changes_requested")
+    _refuse_if_blocked(args.module, args.capability, Path(args.root), "mark-changes")
+    content = _require_artifact(
+        args.module,
+        args.capability,
+        Path(args.root),
+        "review",
+        args.review,
+        f"# review: {args.module} / {args.capability}",
+    )
+    _require_verdict(args.module, args.capability, content, "CHANGES_REQUESTED")
+    codes = _require_reason_codes(args.module, args.capability, content)
     rec.state = "changes_requested"
+    if args.reviewer_run:
+        rec.reviewer_run = args.reviewer_run
+    rec.review = str(Path(args.review))
     save_state(record, Path(args.root))
-    _print(f"marked {args.module}/{args.capability} as changes_requested")
+    _print(
+        f"marked {args.module}/{args.capability} as changes_requested "
+        f"(reasons: {', '.join(codes)})"
+    )
     return 0
 
 
@@ -419,6 +517,7 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
     record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
     _validate_transition(rec.state, "fully_approved")
+    _refuse_if_blocked(args.module, args.capability, Path(args.root), "mark-approved")
     if rec.mode != "full":
         raise StateError(
             "mark-approved requires mode=full; reopen an MVP with "
@@ -434,7 +533,10 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
     )
     verdicts = re.findall(r"^- verdict:\s*(\S+)\s*$", content, re.MULTILINE)
     if verdicts != ["APPROVED"]:
-        raise StateError("review must have exactly one APPROVED verdict")
+        raise StateError(
+            f"review of {args.module} / {args.capability} must carry exactly "
+            f"one APPROVED verdict, got {verdicts or 'none'}"
+        )
     for score in ("contract_conformance", "boundary", "test_coverage", "implementation_quality"):
         values = re.findall(rf"^\s*{score}:\s*(\S+)", content, re.MULTILINE)
         if values != ["OK"]:
@@ -529,6 +631,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("mark-changes", help="reviewer rejects; developer iterates")
     module_cap(sp)
+    sp.add_argument("--reviewer-run", default="")
+    sp.add_argument("--review", default="")
 
     sp = sub.add_parser(
         "retry",

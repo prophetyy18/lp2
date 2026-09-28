@@ -90,11 +90,23 @@ Still open from the same review (P1, not started):
       *interrupted* one, so the common case reads as the common case: most
       capabilities never have an MVP, and a fresh `full` run expects no prior
       traces.
-- [ ] `mark-changes` records no review path or reason codes, so
-      `changes_requested` cannot say which Record caused it.
-- [ ] Design blockers are unregistered: `mark-approved` does not check for an
-      open `<cap>.design-blocker.md`, so a stale blocker can coexist with
-      `fully_approved`.
+- [x] `mark-changes` now records its evidence. It was a bare state flip: no
+      Review Record path and no reasons, while the dispatcher was instructed
+      to "re-dispatch developer with its reason codes" — pointing at
+      something nothing had ever recorded, so the next developer was sent
+      back to guessing. It now validates the Review Record exactly as
+      `mark-approved` does, requires a `CHANGES_REQUESTED` verdict, and
+      requires at least one reason code from the closed set. The codes are
+      defined once in `state.REASON_CODES` so the template, the reviewer
+      prompt and the validator cannot drift.
+- [x] Design blockers are now enforced. STATE deliberately carries no
+      blocker state, which was right, but it also meant a fixed-but-forgotten
+      `<cap>.design-blocker.md` could coexist with `fully_approved` forever.
+      `mark-mvp`, `mark-changes` and `mark-approved` now refuse while the
+      open file exists. Resolution fills in the file's `resolution:` field and
+      renames it to `.design-blocker.resolved.md` — a rename, not a delete,
+      so the reasoning stays readable and the lift is a recorded act. `retry`
+      is deliberately ungated so a blocker cannot deadlock its own work.
 - [ ] `dependers-of` cannot answer its own question; the dispatcher's
       YELLOW/RED upstream gate has no tool. `archctl depends` already reports
       `[OK]` / `[?]` per dependency and is the missing primitive.
