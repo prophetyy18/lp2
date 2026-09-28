@@ -6,7 +6,7 @@ after auditing developer's diff + manifest + Capability Card.
 ```markdown
 # review: <module> / <capability_id>
 
-- reviewer model: MiniMax-M3[1m]
+- reviewer model: MiniMax-M3
 - reviewed: <ISO timestamp>
 - scores (4 项,每项 OK / ISSUE):
    contract_conformance: <OK | ISSUE>   # contract and Card match; no undeclared public behavior

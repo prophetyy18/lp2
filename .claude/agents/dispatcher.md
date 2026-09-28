@@ -56,10 +56,19 @@ If any check fails, surface to Owner with a one-line prompt; do NOT spawn.
   - Read the Implementation Manifest.
   - Run `python -m framework.architecture.cli validate`.
   - Run `python -m tools.check_imports <module>`.
-  - Run `python -m pytest tests/test_<module>_<cap>.py`.
+  - Run `python -m tools.implement.scope <module> --capability <cap>
+    --base <commit recorded before the spawn>`. A `SCOPE_VIOLATION` means
+    the developer wrote outside its own tree: stop, do not spawn reviewer,
+    and surface it to Owner.
+  - Run `python -m unittest tests.test_<module>_<cap>.py -v`
+    (this repo uses unittest; there is no pytest installed).
   - If mode=`full` and checks pass: immediately spawn reviewer (model
-    `MiniMax-M3[1m]`) with the developer diff + manifest + card.
+    `opus`) with the developer diff + manifest + card.
   - If mode=`mvp`: skip reviewer. Go directly to the Owner prompt.
+
+Record the HEAD commit before every spawn that writes. The scope audit
+measures one run against that commit; without it the audit would report
+every uncommitted change in the tree as if this run had made it.
 
 ## What you must do after reviewer returns
 
@@ -168,7 +177,12 @@ not in Owner-facing messages.
 
 For each spawn, your `Agent(...)` call must include:
   - `subagent_type: "general-purpose"`
-  - `model`: from the role file (M3.1 for module-designer / developer, M3 for reviewer)
+  - `model`: only reviewer takes one — `model: "opus"`, which resolves to
+    `MiniMax-M3[1m]` (label "MiniMax-M3"). module-designer and developer take
+    **no** `model` argument and inherit the session model
+    (`MiniMax-M3.1-Flash-Preview`), which is what keeps the review a genuine
+    second opinion. Raw MiniMax ids are rejected by the Agent tool; only the
+    `sonnet` / `opus` / `haiku` / `fable` aliases are accepted.
   - `prompt`: the body of the corresponding role file with `<placeholders>`
     substituted for module / capability / paths
   - The prompt must NOT include any other module's source paths

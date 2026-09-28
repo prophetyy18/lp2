@@ -1,23 +1,27 @@
-"""Implementation state machine.
+"""Implementation workflow tooling.
 
-States per capability:
+Two CLIs live here:
 
-    pending           planned, no implementation
-    mvp_developed     MVP implementation exists, NOT reviewed (does not count as done)
-    fully_approved    implementation reviewed and approved (this counts as done)
-    changes_requested reviewer rejected, developer must iterate
-    abandoned         owner closed this capability
+  `python -m tools.implement.state`   capability state machine (STATE.yaml)
+  `python -m tools.implement.scope`   write-scope audit for one module
 
-Transitions are mechanical (state.py). The dispatcher decides when to fire
-which transition; this package only validates them.
+Submodule names are exposed lazily. Eagerly importing `.state` here would put
+it in `sys.modules` before `-m tools.implement.state` executes it, which makes
+CPython emit a RuntimeWarning on every documented invocation.
 """
 
-from .state import STATE_ROOT, CapabilityState, ModuleState, load_state, save_state
+from typing import Any
 
-__all__ = [
-    "STATE_ROOT",
-    "CapabilityState",
-    "ModuleState",
-    "load_state",
-    "save_state",
-]
+__all__ = ["STATE_ROOT", "CapabilityState", "ModuleState", "load_state", "save_state"]
+
+
+def __getattr__(name: str) -> Any:
+    if name in __all__:
+        from . import state
+
+        return getattr(state, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

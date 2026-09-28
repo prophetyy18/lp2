@@ -40,20 +40,55 @@ drift), boundary, test coverage, and implementation quality. Quality covers
 explicit errors, bounded timeouts/retries where relevant, cleanup,
 readability, and useful types; it does not require unrelated machinery.
 
-## 3. Three isolation layers (module boundary is hard)
+## 3. Isolation layers (module boundary is hard)
 
-Modules must not read each other's implementation. Three layers enforce:
+A module may read its own tree, `architecture/**`, and what its own
+`module.yaml` grants through `readable_extra`. Everything else is denied.
+Four layers back that up, and they are not equally strong:
 
-  1. **Role prompt read scope.** Each role's `.claude/agents/<role>.md`
-     declares an exact allow-list of paths. The dispatcher copies that
-     allow-list into the subagent's spawn prompt.
-  2. **AST import scanner.** `python -m tools.check_imports <module>`
-     walks every `.py` under `modules/<module>/` and reports
-     `BOUNDARY_VIOLATION` for any cross-module `import` or `from X import Y`.
-     CI / pre-commit hook runs this.
-  3. **Implementation Manifest declaration.** Developer must write
+  1. **Declared read scope (policy, not enforcement).** Each role's
+     `.claude/agents/<role>.md` declares an exact allow-list of paths, and
+     the dispatcher copies it into the spawn prompt. This environment does
+     not register per-role subagents, so a subagent runs with the ambient
+     tool permissions and this layer cannot be mechanically enforced. It is
+     a stated obligation the role is held to, not a wall.
+  2. **Audited write scope (enforced).** `python -m tools.implement.scope
+     <module> --capability <cap> --base <commit>` compares the files the run
+     left behind against what that module may write. It is the layer that
+     actually holds, because a run that writes outside its own tree is
+     visible afterwards even when it was never stopped.
+  3. **AST import scanner.** `python -m tools.check_imports <module>`
+     walks every `.py` under `modules/<module>/` and resolves each import to
+     a repo path, then asks the framework (`check_read`) whether the
+     importing module may read it. Denials are reported as
+     `CONTRACT_INSUFFICIENT` when the fix is to declare the dependency, and
+     `BOUNDARY_VIOLATION` otherwise.
+  4. **Implementation Manifest declaration.** Developer must write
      `cross-module imports in new code: NONE` in the manifest; reviewer
      re-runs the scanner and rejects on a false declaration.
+
+### The one legitimate cross-module import
+
+Modules need each other's capabilities, so the boundary cannot be absolute.
+The route is a **declared public surface**:
+
+```yaml
+# provider: modules/<provider>/api/ holds only the contract surface
+depends_on:
+  - contract: <provider>-api
+    uses: [<capability id>]
+
+# consumer
+readable_extra:
+  - modules/<provider>/api/**
+```
+
+`from modules.<provider>.api.<x> import y` is then legal, and
+`modules/<provider>/impl/**` stays locked. Both declarations are required:
+a grant without a matching `depends_on` is reported as
+`CONTRACT_INSUFFICIENT`, so `readable_extra` cannot become a back door
+around the contract. The authoritative allow-list for any module is
+`python -m framework.architecture.cli readable <module>`.
 
 ## 4. State is recorded, not narrated
 
@@ -115,7 +150,8 @@ When sources conflict, use this order:
   1. `architecture/contracts/*.yaml` + `architecture/modules/*/module.yaml`
      — public surface, single source of truth
   2. `.claude/agents/<role>.md` — role behavior, hard rules per role
-  3. `tools/implement/state.py` + `tools/check_imports/scan.py` — enforcement
+  3. `tools/implement/state.py` + `tools/implement/scope.py` +
+     `tools/check_imports/scan.py` — enforcement
   4. `framework/architecture/` — answers the three questions (readable,
      depends, blast_radius); does not know about workflow
   5. `docs/implement/<module>/STATE.yaml` — workflow state; written by CLI
@@ -145,4 +181,5 @@ Those are separate surfaces; this file only defines how agents work.
   - "What is the state of capability X?" → `python -m tools.implement.state show <module> <cap>`
   - "Register an approved Capability Card" → `python -m tools.implement.state register <module> <cap> --mode <full|mvp>`
   - "Does module M violate boundaries?" → `python -m tools.check_imports <module>`
+  - "Did this run write outside its module?" → `python -m tools.implement.scope <module> --capability <cap> --base <commit>`
   - "Run all checks" → `python -m unittest discover -s tests -t . && python -m unittest framework.architecture.tests.test_framework`

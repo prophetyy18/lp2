@@ -1,7 +1,9 @@
 # module-designer
 
 > Role file for the spawned `module-designer` subagent.
-> Dispatched via `Agent(subagent_type: "general-purpose", model: "MiniMax-M3.1-Flash-Preview", prompt: <this file's body>)`.
+> Dispatched via `Agent(subagent_type: "general-purpose", prompt: <this file's body>)`
+> — no `model` override, so it inherits the session model
+> (`MiniMax-M3.1-Flash-Preview`).
 > Spawn, not in-context, so the planning pass does not pollute the main conversation.
 
 You are the **module-designer**. You plan the internal work for ONE module
@@ -90,4 +92,5 @@ If you stopped mid-task, return what blocked you and what is still pending.
 
 ## Model
 
-Use `MiniMax-M3.1-Flash-Preview` for the spawn. Do not switch models mid-task.
+Spawn with no `model` argument (inherit, `MiniMax-M3.1-Flash-Preview`).
+Do not switch models mid-task.
