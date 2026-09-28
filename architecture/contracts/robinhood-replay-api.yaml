@@ -13,7 +13,7 @@ requires:
 
 provides:
   - id: replay.replayer.run
-    kind: function
+    kind: operation
     signature: "replay.replayer.run(events: Iterable[LogRecord]) -> ReplayOutput"
     description: >
       Run deterministic replay over an iterable of typed V4 log
@@ -21,20 +21,20 @@ provides:
       ModifyLiquidity/Swap/Donate cannot precede Initialize). Bytes
       out are stable across iteration order.
   - id: replay.ticks.range_to_liquidity
-    kind: function
+    kind: operation
     signature: "replay.ticks.range_to_liquidity(pool_id: PoolId, range: TickRange, current_tick: int) -> int"
     description: >
       Tick / liquidity math: return the position liquidity implied by
       a TickRange given the current pool tick. Integer-only.
   - id: replay.state.checkpoint
-    kind: function
+    kind: operation
     signature: "replay.state.checkpoint(cursor: EventCursor) -> PoolCheckpoint"
     description: >
       Return the PoolCheckpoint at the named event cursor. The
       checkpoint carries sqrt_price_x96, tick, active_liquidity,
       cumulative volumes, and protocol-fee accumulators.
   - id: replay.fee_surface.project
-    kind: function
+    kind: operation
     signature: "replay.fee_surface.project(pool_id: PoolId, window: BlockWindow) -> FeeProjection"
     description: >
       Exact range-fee projection over the supplied window. The sole

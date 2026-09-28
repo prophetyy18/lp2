@@ -14,14 +14,14 @@ requires:
 
 provides:
   - id: execution.paper.fill
-    kind: function
+    kind: operation
     signature: "execution.paper.fill(intent: ApprovedIntent, market_state: MarketState) -> Fill"
     description: >
       Translate an APPROVED intent into a deterministic paper fill
       against the supplied market state (T071). Returns the Fill
       record; persists to the paper ledger.
   - id: execution.planner.build_transaction
-    kind: function
+    kind: operation
     signature: "execution.planner.build_transaction(intent: ApprovedIntent, market_state: MarketState) -> UnsignedTransaction"
     description: >
       Deterministic V4 planner: build the unsigned transaction for

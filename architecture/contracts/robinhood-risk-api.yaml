@@ -14,7 +14,7 @@ requires:
 
 provides:
   - id: risk.evaluate
-    kind: function
+    kind: operation
     signature: "risk.evaluate(intent: RiskIntent, context: RiskContext, config: RiskConfig) -> RiskDecision"
     description: >
       The full pipeline (T070). Returns a RiskDecision carrying
@@ -23,7 +23,7 @@ provides:
       a reason code. The decision is byte-identical for two calls
       with equal inputs under equal configuration versions.
   - id: risk.config.current
-    kind: function
+    kind: operation
     signature: "risk.config.current(version_id: str) -> RiskConfig"
     description: >
       Resolve the RiskConfig for the named version_id. A configuration

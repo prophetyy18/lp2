@@ -74,7 +74,15 @@ class ImpactResult:
 def impact_of_contract(
     arch: Architecture, contract: str, capabilities: list[str] | None = None
 ) -> ImpactResult:
-    """Blast radius of a change to `contract` (or to the listed capabilities)."""
+    """Blast radius of a change to `contract` (or to the listed capabilities).
+
+    When `capabilities` is non-empty, the blast radius is narrowed: direct
+    consumers whose declared `uses` does not intersect the changed capability
+    set are dropped, with a note explaining the downgrad. Indirect impact is
+    kept conservative because the intermediate contract's capabilities do
+    not (yet) declare which underlying capabilities they invoke, so we
+    cannot prove a consumer is unaffected through a chain.
+    """
     if contract not in arch.contracts:
         raise ArchError(
             UNKNOWN_CONTRACT,
@@ -82,6 +90,7 @@ def impact_of_contract(
         )
 
     result = ImpactResult(subject=contract, subject_kind="contract")
+    cap_set: set[str] = set()
     if capabilities:
         unknown = [c for c in capabilities if not arch.contracts[contract].has_capability(c)]
         if unknown:
@@ -89,9 +98,12 @@ def impact_of_contract(
                 CONTRACT_INSUFFICIENT,
                 f"contract `{contract}` does not provide: {', '.join(sorted(unknown))}",
             )
-        result.capabilities = tuple(sorted(capabilities))
+        cap_set = set(capabilities)
+        result.capabilities = tuple(sorted(cap_set))
 
-    # Direct: publishers implement it, consumers read it.
+    owner_names = {o.name for o in owners(arch, contract)}
+
+    # Direct: publishers implement it (always full surface), consumers read it.
     for mod in owners(arch, contract):
         result.direct.append(
             ModuleImpact(
@@ -102,9 +114,19 @@ def impact_of_contract(
             )
         )
     for mod in consumers(arch, contract):
-        if mod.name in {o.name for o in owners(arch, contract)}:
+        if mod.name in owner_names:
             continue  # self-published, already recorded
         dep = mod.dependency_on(contract)
+        mod_uses = set(dep.uses) if dep else set()
+        if cap_set and not (mod_uses & cap_set):
+            # Narrowed: this consumer does not touch the changed capabilities.
+            result.notes.append(
+                f"`{mod.name}` depends on `{contract}` via uses "
+                f"{sorted(mod_uses) or '(none)'}; none of the changed "
+                f"capabilities {sorted(cap_set)} are used, so no review is "
+                f"required"
+            )
+            continue
         result.direct.append(
             ModuleImpact(
                 module=mod.name, distance=1, via=contract, uses=tuple(dep.uses if dep else ())
@@ -112,6 +134,9 @@ def impact_of_contract(
         )
 
     # Indirect: anything consuming a contract that requires the changed one.
+    # Kept conservative: a contract that requires the changed one might
+    # route any of its capabilities through it, and we don't yet model that
+    # graph. Surface a note when narrowing would matter.
     for via, dist in reverse_contracts(arch, contract):
         result.impacted_contracts.append((via, dist))
         for mod in consumers(arch, via):
@@ -126,6 +151,13 @@ def impact_of_contract(
                     uses=tuple(dep.uses if dep else ()),
                 )
             )
+
+    if cap_set and result.indirect:
+        result.notes.append(
+            "indirect impact is kept conservative: an intermediate contract "
+            "that requires the changed one may route any of its capabilities "
+            "through it; only direct consumers are narrowed by `uses`"
+        )
 
     result.notes.extend(_semver_notes(arch, contract, result))
     return result

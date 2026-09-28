@@ -25,6 +25,7 @@ from .errors import (
     ERROR,
     ILLEGAL_DEPENDENCY,
     INFO,
+    UNITEMISED_USES,
     UNKNOWN_CONTRACT,
     WARNING,
     Finding,
@@ -257,7 +258,28 @@ def _check_hygiene(arch: Architecture) -> list[Finding]:
     out: list[Finding] = []
     for mod in sorted(arch.modules.values(), key=lambda m: m.name):
         for dep in mod.depends_on:
-            if not dep.uses:
+            contract = arch.contracts.get(dep.contract)
+            # When the contract publishes capabilities, an unitemised `uses`
+            # is now an ERROR: capability-level impact analysis requires
+            # every consumer to name what it relies on.
+            if not dep.uses and contract and contract.provides:
+                out.append(
+                    Finding(
+                        code=UNITEMISED_USES,
+                        message=(
+                            f"module `{mod.name}` depends on `{dep.contract}` without itemising "
+                            "`uses`; capability-level impact analysis cannot narrow without ids"
+                        ),
+                        context={
+                            "module": mod.name,
+                            "contract": dep.contract,
+                            "available": list(contract.capability_ids()),
+                        },
+                    )
+                )
+            elif not dep.uses:
+                # Contract publishes nothing yet (e.g. placeholder); keep this
+                # as a soft warning so a contract in flight doesn't block CI.
                 out.append(
                     Finding(
                         code=CONTRACT_INSUFFICIENT,

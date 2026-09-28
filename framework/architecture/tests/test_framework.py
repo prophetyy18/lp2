@@ -14,12 +14,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from framework.architecture import boundary, graph, impact, loader, query, validator
+from framework.architecture import boundary, graph, impact, loader, query, snapshot, validator
 from framework.architecture.errors import (
     BOUNDARY_VIOLATION,
     CONTRACT_INSUFFICIENT,
     CYCLE_DETECTED,
     ILLEGAL_DEPENDENCY,
+    INVALID_METADATA,
+    UNITEMISED_USES,
     UNKNOWN_CONTRACT,
     ArchError,
 )
@@ -233,9 +235,64 @@ class ImpactTests(TempArchTest):
         arch = self.arch(modules=modules)
         result = impact.impact_of_contract(arch, "alpha-api")
         self.assertTrue(any("without itemising" in n for n in result.notes))
-        # ...and it is a warning, not an error.
-        warnings = [f for f in validator.validate(arch) if f.code == CONTRACT_INSUFFICIENT]
-        self.assertTrue(all(f.severity == "WARNING" for f in warnings))
+        # alpha-api publishes capabilities, so an unitemised `uses` is
+        # now an ERROR (UNITEMISED_USES), not a soft warning.
+        errs = [f for f in validator.validate(arch) if f.code == UNITEMISED_USES]
+        self.assertEqual(len(errs), 1)
+        self.assertEqual(errs[0].severity, "ERROR")
+        self.assertEqual(errs[0].context["module"], "beta")
+
+    def test_unitemised_dependency_is_soft_warning_when_contract_publishes_nothing(self) -> None:
+        contracts = base_contracts()
+        # Strip all capabilities from alpha-api so unitemised `uses` is allowed
+        # as a soft warning (the contract is a placeholder, not yet capable).
+        contracts["alpha-api"]["provides"] = []
+        modules = base_modules()
+        modules["beta"]["depends_on"] = [{"contract": "alpha-api"}]
+        arch = self.arch(contracts=contracts, modules=modules)
+        warnings = [
+            f
+            for f in validator.validate(arch)
+            if f.code == CONTRACT_INSUFFICIENT and f.severity == "WARNING"
+        ]
+        self.assertEqual(len(warnings), 1)
+
+    def test_capability_filter_narrows_direct_impact(self) -> None:
+        modules = base_modules()
+        modules["delta"] = {
+            "name": "delta",
+            "provides_contracts": [],
+            "depends_on": [{"contract": "alpha-api", "uses": ["alpha.two"]}],
+        }
+        arch = self.arch(modules=modules)
+
+        # Change only to alpha.one — delta (uses alpha.two) should be downgrad-noted,
+        # not listed in direct.
+        result = impact.impact_of_contract(arch, "alpha-api", capabilities=["alpha.one"])
+        direct_modules = {i.module for i in result.direct}
+        self.assertIn("beta", direct_modules)  # beta uses alpha.one
+        self.assertNotIn("delta", direct_modules)
+        self.assertTrue(
+            any("delta" in n and "alpha.two" in n for n in result.notes),
+            f"expected a downgrad note for delta, got notes={result.notes}",
+        )
+
+    def test_capability_filter_keeps_indirect_impact_conservative(self) -> None:
+        modules = base_modules()
+        modules["gamma"] = {
+            "name": "gamma",
+            "provides_contracts": [],
+            "depends_on": [{"contract": "beta-api", "uses": ["beta.one"]}],
+        }
+        arch = self.arch(modules=modules)
+        result = impact.impact_of_contract(arch, "alpha-api", capabilities=["alpha.one"])
+        indirect_modules = {i.module for i in result.indirect}
+        self.assertIn("gamma", indirect_modules)
+        # Indirect impact stays conservative; a note must call that out.
+        self.assertTrue(
+            any("indirect impact is kept conservative" in n for n in result.notes),
+            f"expected a conservative-indirect note, got notes={result.notes}",
+        )
 
 
 class SnapshotDiffTests(TempArchTest):
@@ -293,6 +350,223 @@ class RealArchitectureTests(unittest.TestCase):
                 with self.subTest(module=consumer.name, other=producer.name):
                     finding = boundary.check_read(consumer, f"{producer.path}/core.py", arch)
                     self.assertIsNotNone(finding)
+
+
+# --- capability metadata model --------------------------------------------
+
+
+class CapabilityModelTests(TempArchTest):
+    """Loader-level checks for the extended Capability metadata.
+
+    Each test exercises one rule: kind vocabulary, mutual exclusion of
+    input/output/payload, error parsing, behavior-tag parsing.
+    """
+
+    def _contract(self, body: dict) -> dict:
+        return {
+            "name": "alpha-api",
+            "version": 1,
+            "requires": [],
+            "provides": [body],
+        }
+
+    def test_default_kind_is_operation(self) -> None:
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [{"id": "alpha.one"}]
+        arch = self.arch(contracts=contracts)
+        cap = arch.contract("alpha-api").provides[0]
+        self.assertEqual(cap.kind, "operation")
+
+    def test_event_kind_carries_payload(self) -> None:
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {"id": "alpha.ticked", "kind": "event", "payload": {"schema": "alpha.Tick"}}
+        ]
+        arch = self.arch(contracts=contracts)
+        cap = arch.contract("alpha-api").provides[0]
+        self.assertEqual(cap.kind, "event")
+        self.assertEqual(cap.payload, cap.payload)  # round-tripped
+        self.assertIsNone(cap.input)
+        self.assertIsNone(cap.output)
+
+    def test_data_kind_carries_output(self) -> None:
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {"id": "alpha.list", "kind": "data", "output": {"schema": "alpha.FactorList"}}
+        ]
+        arch = self.arch(contracts=contracts)
+        cap = arch.contract("alpha-api").provides[0]
+        self.assertEqual(cap.kind, "data")
+        self.assertIsNone(cap.input)
+        self.assertIsNone(cap.payload)
+        self.assertIsNotNone(cap.output)
+
+    def test_unknown_kind_is_rejected_at_load(self) -> None:
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [{"id": "alpha.one", "kind": "function"}]
+        with self.assertRaises(ArchError) as ctx:
+            self.arch(contracts=contracts)
+        self.assertEqual(ctx.exception.code, INVALID_METADATA)
+        self.assertIn("kind", ctx.exception.message)
+
+    def test_event_must_not_declare_input_or_output(self) -> None:
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {"id": "alpha.ticked", "kind": "event", "input": {"schema": "alpha.Tick"}}
+        ]
+        with self.assertRaises(ArchError) as ctx:
+            self.arch(contracts=contracts)
+        self.assertEqual(ctx.exception.code, INVALID_METADATA)
+
+    def test_operation_must_not_declare_payload(self) -> None:
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {
+                "id": "alpha.run",
+                "kind": "operation",
+                "payload": {"schema": "alpha.Tick"},
+            }
+        ]
+        with self.assertRaises(ArchError) as ctx:
+            self.arch(contracts=contracts)
+        self.assertEqual(ctx.exception.code, INVALID_METADATA)
+
+    def test_data_must_not_declare_input_or_payload(self) -> None:
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {"id": "alpha.list", "kind": "data", "input": {"schema": "alpha.Foo"}}
+        ]
+        with self.assertRaises(ArchError) as ctx:
+            self.arch(contracts=contracts)
+        self.assertEqual(ctx.exception.code, INVALID_METADATA)
+
+    def test_errors_accept_short_and_long_forms(self) -> None:
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {
+                "id": "alpha.run",
+                "kind": "operation",
+                "errors": ["SHORT", {"code": "LONG", "recoverable": "permanent"}],
+            }
+        ]
+        arch = self.arch(contracts=contracts)
+        errs = arch.contract("alpha-api").provides[0].errors
+        self.assertEqual([e.code for e in errs], ["SHORT", "LONG"])
+        self.assertEqual(errs[0].recoverable, "transient")
+        self.assertEqual(errs[1].recoverable, "permanent")
+
+    def test_errors_recoverable_must_be_in_vocabulary(self) -> None:
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {
+                "id": "alpha.run",
+                "kind": "operation",
+                "errors": [{"code": "X", "recoverable": "maybe"}],
+            }
+        ]
+        with self.assertRaises(ArchError) as ctx:
+            self.arch(contracts=contracts)
+        self.assertEqual(ctx.exception.code, INVALID_METADATA)
+
+    def test_behavior_rejects_unknown_unit(self) -> None:
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {
+                "id": "alpha.run",
+                "kind": "operation",
+                "behavior": {"unit": "kelvin"},
+            }
+        ]
+        with self.assertRaises(ArchError) as ctx:
+            self.arch(contracts=contracts)
+        self.assertEqual(ctx.exception.code, INVALID_METADATA)
+
+    def test_behavior_round_trips_through_dict(self) -> None:
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {
+                "id": "alpha.run",
+                "kind": "operation",
+                "behavior": {
+                    "unit": "usdg",
+                    "time": "event_time",
+                    "idempotent": True,
+                    "ordering": "total",
+                    "stale_tolerance": "5min",
+                },
+            }
+        ]
+        arch = self.arch(contracts=contracts)
+        cap = arch.contract("alpha-api").provides[0]
+        self.assertEqual(cap.behavior.unit, "usdg")
+        self.assertEqual(cap.behavior.time, "event_time")
+        self.assertTrue(cap.behavior.idempotent)
+        self.assertEqual(cap.behavior.ordering, "total")
+        # Round-trip into the dict that the snapshot writer emits.
+        d = cap.to_dict()
+        self.assertEqual(
+            d["behavior"],
+            {
+                "unit": "usdg",
+                "time": "event_time",
+                "idempotent": True,
+                "ordering": "total",
+                "stale_tolerance": "5min",
+            },
+        )
+
+
+class CapabilityBreakingTests(TempArchTest):
+    """Snapshot-level checks: capability-field changes are breaking."""
+
+    def test_renaming_a_capability_field_is_breaking(self) -> None:
+        arch = self.arch()
+        snap = snapshot.write(arch, self.root / "snap.json")
+
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {
+                "id": "alpha.one",
+                "kind": "operation",
+                "behavior": {"unit": "usdg", "time": "event_time"},
+            }
+        ]
+        write_tree(self.root, contracts, base_modules())
+        report = query.impact_of_diff(loader.load(self.root), str(snap))
+        self.assertTrue(report["breaking"])
+        changed = report["diff"]["contracts"][0]["changed_capabilities"]
+        self.assertEqual(len(changed), 1)
+        self.assertEqual(changed[0]["id"], "alpha.one")
+        self.assertIn("behavior", changed[0]["field_changes"])
+
+    def test_purely_cosmetic_description_change_is_not_breaking(self) -> None:
+        arch = self.arch()
+        snap = snapshot.write(arch, self.root / "snap.json")
+
+        contracts = base_contracts()
+        # Touch only the human description; capability fields are untouched.
+        contracts["alpha-api"]["provides"] = [
+            {"id": "alpha.one", "description": "new wording"},
+            {"id": "alpha.two"},
+        ]
+        write_tree(self.root, contracts, base_modules())
+        report = query.impact_of_diff(loader.load(self.root), str(snap))
+        # No capability was added/removed; no field changed.
+        self.assertFalse(report["breaking"])
+
+    def test_adding_a_capability_is_not_breaking(self) -> None:
+        arch = self.arch()
+        snap = snapshot.write(arch, self.root / "snap.json")
+
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {"id": "alpha.one"},
+            {"id": "alpha.two"},
+            {"id": "alpha.three"},
+        ]
+        write_tree(self.root, contracts, base_modules())
+        report = query.impact_of_diff(loader.load(self.root), str(snap))
+        self.assertFalse(report["breaking"])
 
 
 if __name__ == "__main__":

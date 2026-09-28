@@ -9,41 +9,114 @@ description: >
 
 provides:
   - id: protocol.pool_key.parse
-    kind: function
-    signature: "protocol.pool_key.parse(raw: bytes) -> PoolKey"
+    kind: operation
+    input:  { schema: robinhood-protocol-api.PoolKeyRaw }
+    output: { schema: robinhood-protocol-api.PoolKey }
+    errors:
+      - { code: PROTOCOL_INVALID_POOL_KEY, recoverable: user_input }
+      - { code: PROTOCOL_ORDER_VIOLATION,  recoverable: user_input }
+    behavior:
+      unit: address
+      time: event_time
+      idempotent: true
+      ordering: total
     description: >
       Decode a V4 PoolKey from its ABI-encoded form. Enforces the V4
-      ordering invariant (currency0 < currency1 as uint160). Raises
-      ValueError on malformed input.
+      ordering invariant (currency0 < currency1 as uint160).
+
   - id: protocol.pool_id.compute
-    kind: function
-    signature: "protocol.pool_id.compute(key: PoolKey) -> PoolId"
+    kind: operation
+    input:  { schema: robinhood-protocol-api.PoolKey }
+    output: { schema: robinhood-protocol-api.PoolId }
+    errors:
+      - { code: PROTOCOL_INVALID_POOL_KEY, recoverable: user_input }
+    behavior:
+      unit: bytes
+      time: event_time
+      idempotent: true
+      ordering: total
     description: >
       Compute PoolId as keccak256 of the ABI-encoded PoolKey. Equal
       inputs produce byte-identical PoolIds in any process.
+
   - id: protocol.identity.chain_id.parse
-    kind: function
-    signature: "protocol.identity.chain_id.parse(s: str) -> ChainId"
+    kind: operation
+    input:  { schema: robinhood-protocol-api.ChainIdString }
+    output: { schema: robinhood-protocol-api.ChainId }
+    errors:
+      - { code: PROTOCOL_INVALID_CHAIN_ID, recoverable: user_input }
+    behavior:
+      unit: decimal
+      idempotent: true
     description: Parse a decimal string into a positive ChainId.
+
   - id: protocol.identity.address.parse
-    kind: function
-    signature: "protocol.identity.address.parse(s: str) -> Address"
+    kind: operation
+    input:  { schema: robinhood-protocol-api.AddressString }
+    output: { schema: robinhood-protocol-api.Address }
+    errors:
+      - { code: PROTOCOL_INVALID_ADDRESS, recoverable: user_input }
+    behavior:
+      unit: address
+      idempotent: true
     description: Parse an EIP-55 mixed-case or all-lowercase hex string into a 20-byte Address.
+
   - id: protocol.sqrt_price.to_display
-    kind: function
-    signature: "protocol.sqrt_price.to_display(sqrt_price_x96: int, decimals0: int, decimals1: int) -> Decimal"
+    kind: operation
+    input:  { schema: robinhood-protocol-api.SqrtPriceToDisplayRequest }
+    output: { schema: robinhood-protocol-api.DisplayPrice }
+    errors:
+      - { code: PROTOCOL_DISPLAY_OUT_OF_RANGE, recoverable: permanent }
+    behavior:
+      unit: decimal
+      time: event_time
+      idempotent: true
     description: >
       The single named display boundary for sqrtPriceX96 (ADR-009).
       Integer input only; output is a Decimal rounded to 18 fractional
       digits. Inverse direction does not exist in V1.
+
+  - id: protocol.sqrt_price.observed
+    kind: event
+    payload: { schema: robinhood-protocol-api.SqrtPriceTick }
+    behavior:
+      unit: bytes
+      time: event_time
+      ordering: total
+    description: >
+      Emitted by protocol consumers when a new sqrtPriceX96 observation
+      lands. Subscribers MUST treat events as totally ordered; duplicates
+      are dropped by (block_number, transaction_index, log_index).
+
   - id: protocol.sizing.compute
-    kind: function
-    signature: "protocol.sizing.compute(range: TickRange, capital_q64_64: int, fee: int, hook_evidence: HookEvidence) -> SizingDecision"
+    kind: operation
+    input:  { schema: robinhood-protocol-api.SizingRequest }
+    output: { schema: robinhood-protocol-api.SizingDecision }
+    errors:
+      - { code: PROTOCOL_RANGE_DEGENERATE,       recoverable: user_input }
+      - { code: PROTOCOL_TICK_OUT_OF_BOUNDS,     recoverable: user_input }
+      - { code: PROTOCOL_TICK_NOT_ALIGNED,        recoverable: user_input }
+      - { code: PROTOCOL_CAPITAL_EXCESSIVE,       recoverable: user_input }
+      - { code: PROTOCOL_HOOK_EVIDENCE_MISSING,   recoverable: permanent }
+      - { code: PROTOCOL_BELOW_MINIMUM_SIZE,      recoverable: user_input }
+    behavior:
+      unit: wei
+      time: event_time
+      idempotent: true
+      ordering: total
     description: >
       Fixed-Range, single-liquidityDelta sizing (T049). Enforces
       integer math, Hook BalanceDelta verification, native ETH gas
       reservation, both raw-token caps after Hook/Gas effects, and the
       minimum-economic-size floor. The sizer never widens the Range to
       fit a cap.
+
+  - id: protocol.sizing.error_vocabulary
+    kind: data
+    output: { schema: robinhood-protocol-api.SizingErrorVocabulary }
+    description: >
+      Closed vocabulary of error codes the sizer returns. Adding a code
+      is additive; renaming or removing a code is breaking. Consumers
+      branch on these strings, not on internal exception class names.
 
 requires: []

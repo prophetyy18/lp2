@@ -19,7 +19,7 @@ requires:
 
 provides:
   - id: application.backtest.start
-    kind: function
+    kind: operation
     signature: "application.backtest.start(request: BacktestRequest) -> BacktestResult"
     description: >
       T113 stable public backtest use case. Loads events through the
@@ -28,35 +28,35 @@ provides:
       failure path; the predecessor T109 writer is unreachable through
       this entry.
   - id: application.backtest.resume
-    kind: function
+    kind: operation
     signature: "application.backtest.resume(run_id: RunId) -> BacktestResult"
     description: >
       Resume a previously persisted backtest run from its
       RunStateStore record without duplicating it. Composes the same
       pipeline as start; the resume path is symmetric with start.
   - id: application.historical_replay.compose
-    kind: function
+    kind: operation
     signature: "application.historical_replay.compose(snapshot_set: SnapshotSet) -> ReplayFrames"
     description: >
       T110 qualified MarketState/RunState composition. Returns the
       replay frames the Web read models consume; projects T112
       evidence without callbacks.
   - id: application.ingest.run
-    kind: function
+    kind: operation
     signature: "application.ingest.run(request: IngestRequest) -> IngestResult"
     description: >
       T032 historical ingestion: plan ranges, route by capability,
       write to storage, persist the run manifest. The checkpoint
       cannot advance past any failed / uncovered interval.
   - id: application.reduce_only.execute
-    kind: function
+    kind: operation
     signature: "application.reduce_only.execute(request: ReduceOnlyRequest) -> Result"
     description: >
       T097 reduce-only write path. Submits RiskIntentSource =
       MANUAL_REDUCE_ONLY; the risk gateway handles the rest. Used by
       the Web reduce action and the corresponding CLI subcommand.
   - id: application.realtime.tick
-    kind: function
+    kind: operation
     signature: "application.realtime.tick(pool_id: PoolId) -> RunState"
     description: >
       T072 single-decision realtime evaluation: assemble the snapshot

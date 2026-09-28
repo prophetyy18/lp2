@@ -16,6 +16,7 @@ ILLEGAL_DEPENDENCY = "ILLEGAL_DEPENDENCY"
 
 # --- "the metadata cannot answer this, and reading code is not allowed" ----
 CONTRACT_INSUFFICIENT = "CONTRACT_INSUFFICIENT"
+UNITEMISED_USES = "UNITEMISED_USES"
 ARCHITECTURE_CHANGE_REQUIRED = "ARCHITECTURE_CHANGE_REQUIRED"
 
 # --- load / structure errors ----------------------------------------------

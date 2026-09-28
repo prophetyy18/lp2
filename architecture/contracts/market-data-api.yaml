@@ -6,17 +6,17 @@ description: >
 
 provides:
   - id: series.get
-    kind: function
+    kind: operation
     signature: "series.get(symbol: str, start: datetime, end: datetime, tf: str) -> pd.DataFrame"
     description: >
       OHLCV bars for a symbol. Columns: ts, open, high, low, close, volume.
       tz-aware UTC. Returns an empty frame when no bars exist.
   - id: series.symbols
-    kind: function
+    kind: operation
     signature: "series.symbols() -> list[str]"
     description: Symbols available to the rest of the system.
   - id: series.calendar
-    kind: function
+    kind: operation
     signature: "series.calendar(start: datetime, end: datetime) -> list[datetime]"
     description: Trading sessions between start and end.
 

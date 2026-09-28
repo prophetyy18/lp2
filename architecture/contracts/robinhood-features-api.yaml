@@ -11,35 +11,35 @@ requires:
 
 provides:
   - id: features.bars.compute
-    kind: function
+    kind: operation
     signature: "features.bars.compute(pool_id: PoolId, start: int, end: int, interval: str) -> list[Bar]"
     description: >
       Time/block bars for the supplied pool over a closed window.
       T050 bars: every bar carries event-time endpoints and the
       realized volatility (Q64.64) over its interval.
   - id: features.position.value
-    kind: function
+    kind: operation
     signature: "features.position.value(position: PositionKey, at_tick: int) -> PositionValuation"
     description: >
       LP position valuation at the supplied tick (T051). Returns
       in-range/out-of-range state, principal inventory, tokens_owed
       from fee-growth accounting, and protocol-fee separation.
   - id: features.position.principal_delta
-    kind: function
+    kind: operation
     signature: "features.position.principal_delta(position: PositionKey, event: LogRecord) -> PrincipalDelta"
     description: >
       Apply mint/burn/collect/donation/verified-hook-credit to the
       position principal ledger. Donations and verified hook credits
       fold into principal; unverified donations stay as raw amounts.
   - id: features.attribution.attribute
-    kind: function
+    kind: operation
     signature: "features.attribution.attribute(position: PositionKey, event: LogRecord) -> PnLAttribution"
     description: >
       Per-event PnL attribution (T052). Decomposes the position's
       mark-to-market move into fees, price movement, IL, and residual.
       The residual field is never hidden.
   - id: features.quote.usdg
-    kind: function
+    kind: operation
     signature: "features.quote.usdg(symbol: Symbol, at: int) -> USDGPrice"
     description: >
       Qualified USDG price for the symbol at the supplied event time

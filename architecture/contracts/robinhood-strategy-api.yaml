@@ -13,7 +13,7 @@ requires:
 
 provides:
   - id: strategy.evaluate
-    kind: function
+    kind: operation
     signature: "strategy.evaluate(snapshot_set: SnapshotSet, regime_model: RegimeModel, fee_opp_model: FeeOpportunityModel, clock: DeterministicClock, rng: SeededRandomSource) -> CandidateAction"
     description: >
       Run the strategy decision pipeline (T060): validate_proposal
@@ -22,14 +22,14 @@ provides:
       the named reason code; the strategy never fabricates a candidate
       past the validator.
   - id: strategy.registry.register
-    kind: function
+    kind: operation
     signature: "strategy.registry.register(name: str, factory: Callable[[], Strategy]) -> None"
     description: >
       Register a strategy implementation by name (T068). Strategies
       register into the registry; the backtest engine never imports a
       concrete strategy module by name.
   - id: strategy.validate_proposal
-    kind: function
+    kind: operation
     signature: "strategy.validate_proposal(proposal: Proposal) -> None"
     description: >
       Validate a candidate proposal before a CandidateAction is built.

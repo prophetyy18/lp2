@@ -14,7 +14,21 @@ from typing import Any
 import yaml
 
 from .errors import ArchError, INVALID_METADATA
-from .model import Architecture, Capability, Contract, Dependency, Module
+from .model import (
+    BEHAVIOR_ORDERING,
+    BEHAVIOR_TIME,
+    BEHAVIOR_UNITS,
+    CAPABILITY_KINDS,
+    RECOVERABLE_KINDS,
+    Architecture,
+    BehaviorTag,
+    Capability,
+    Contract,
+    Dependency,
+    ErrorCode,
+    Module,
+    SchemaRef,
+)
 
 CONTRACTS_DIR = "architecture/contracts"
 MODULES_DIR = "architecture/modules"
@@ -72,19 +86,14 @@ def _load_contract(path: Path, root: Path) -> Contract:
     raw_provides = data.get("provides") or []
     if not isinstance(raw_provides, list):
         raise ArchError(INVALID_METADATA, f"{path}: `provides` must be a list")
-    for item in raw_provides:
+    for idx, item in enumerate(raw_provides):
         if isinstance(item, str):
             item = {"id": item}
         if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-            raise ArchError(INVALID_METADATA, f"{path}: each provides entry needs a string `id`")
-        provides.append(
-            Capability(
-                id=item["id"],
-                kind=str(item.get("kind", "opaque")),
-                signature=str(item.get("signature", "")),
-                description=str(item.get("description", "")),
+            raise ArchError(
+                INVALID_METADATA, f"{path}: each provides entry needs a string `id`"
             )
-        )
+        provides.append(_load_capability(item, path, idx))
 
     rel = path.relative_to(root).as_posix()
     return Contract(
@@ -95,6 +104,153 @@ def _load_contract(path: Path, root: Path) -> Contract:
         provides=tuple(provides),
         requires=_str_list(data.get("requires"), path, "requires"),
     )
+
+
+def _load_capability(item: dict, path: Path, idx: int) -> Capability:
+    cap_id = item["id"]
+    prefix = f"{path}: provides[{idx}] {cap_id}"
+
+    kind = item.get("kind", "operation")
+    if kind not in CAPABILITY_KINDS:
+        raise ArchError(
+            INVALID_METADATA,
+            f"{prefix}: `kind` must be one of "
+            f"{', '.join(CAPABILITY_KINDS)}, got {kind!r}",
+        )
+
+    has_input = "input" in item
+    has_output = "output" in item
+    has_payload = "payload" in item
+
+    input_ref: SchemaRef | None = None
+    output_ref: SchemaRef | None = None
+    payload_ref: SchemaRef | None = None
+    errors: tuple[ErrorCode, ...] = ()
+
+    if kind == "operation":
+        if has_payload:
+            raise ArchError(
+                INVALID_METADATA,
+                f"{prefix}: `payload` only allowed for kind `event`",
+            )
+        input_ref = _parse_schema_ref(item.get("input"), prefix, "input")
+        output_ref = _parse_schema_ref(item.get("output"), prefix, "output")
+        errors = _parse_errors(item.get("errors", []), prefix)
+    elif kind == "event":
+        if has_input or has_output:
+            raise ArchError(
+                INVALID_METADATA,
+                f"{prefix}: kind `event` must not declare `input` or `output`",
+            )
+        payload_ref = _parse_schema_ref(item.get("payload"), prefix, "payload")
+    else:  # data
+        if has_input or has_payload:
+            raise ArchError(
+                INVALID_METADATA,
+                f"{prefix}: kind `data` must not declare `input` or `payload`",
+            )
+        output_ref = _parse_schema_ref(item.get("output"), prefix, "output")
+
+    behavior = _parse_behavior(item.get("behavior"), prefix)
+
+    return Capability(
+        id=cap_id,
+        kind=kind,
+        signature=str(item.get("signature", "")),
+        description=str(item.get("description", "")),
+        input=input_ref,
+        output=output_ref,
+        payload=payload_ref,
+        errors=errors,
+        behavior=behavior,
+    )
+
+
+def _parse_schema_ref(raw: Any, prefix: str, field_name: str) -> SchemaRef | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return SchemaRef(schema=raw)
+    if isinstance(raw, dict) and isinstance(raw.get("schema"), str):
+        return SchemaRef(schema=raw["schema"])
+    raise ArchError(
+        INVALID_METADATA,
+        f"{prefix}: `{field_name}` must be a schema id string or {{schema: <id>}}",
+    )
+
+
+def _parse_errors(raw: Any, prefix: str) -> tuple[ErrorCode, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ArchError(
+            INVALID_METADATA, f"{prefix}: `errors` must be a list of code strings or objects"
+        )
+    out: list[ErrorCode] = []
+    for idx, item in enumerate(raw):
+        if isinstance(item, str):
+            out.append(ErrorCode(code=item))
+            continue
+        if isinstance(item, dict) and isinstance(item.get("code"), str):
+            recoverable = str(item.get("recoverable", "transient"))
+            if recoverable not in RECOVERABLE_KINDS:
+                raise ArchError(
+                    INVALID_METADATA,
+                    f"{prefix}: errors[{idx}].recoverable must be one of "
+                    f"{', '.join(RECOVERABLE_KINDS)}, got {recoverable!r}",
+                )
+            out.append(ErrorCode(code=item["code"], recoverable=recoverable))
+            continue
+        raise ArchError(
+            INVALID_METADATA,
+            f"{prefix}: errors[{idx}] must be a string or {{code, recoverable}}",
+        )
+    return tuple(out)
+
+
+def _parse_behavior(raw: Any, prefix: str) -> BehaviorTag | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ArchError(INVALID_METADATA, f"{prefix}: `behavior` must be a mapping")
+    kwargs: dict[str, Any] = {}
+    if "unit" in raw:
+        unit = str(raw["unit"])
+        if unit not in BEHAVIOR_UNITS:
+            raise ArchError(
+                INVALID_METADATA,
+                f"{prefix}: behavior.unit must be one of "
+                f"{', '.join(u for u in BEHAVIOR_UNITS if u)}, got {unit!r}",
+            )
+        kwargs["unit"] = unit
+    if "time" in raw:
+        t = str(raw["time"])
+        if t not in BEHAVIOR_TIME:
+            raise ArchError(
+                INVALID_METADATA,
+                f"{prefix}: behavior.time must be one of "
+                f"{', '.join(t for t in BEHAVIOR_TIME if t)}, got {t!r}",
+            )
+        kwargs["time"] = t
+    if "idempotent" in raw:
+        val = raw["idempotent"]
+        if not isinstance(val, bool):
+            raise ArchError(
+                INVALID_METADATA, f"{prefix}: behavior.idempotent must be a boolean"
+            )
+        kwargs["idempotent"] = val
+    if "ordering" in raw:
+        o = str(raw["ordering"])
+        if o not in BEHAVIOR_ORDERING:
+            raise ArchError(
+                INVALID_METADATA,
+                f"{prefix}: behavior.ordering must be one of "
+                f"{', '.join(o for o in BEHAVIOR_ORDERING if o)}, got {o!r}",
+            )
+        kwargs["ordering"] = o
+    if "stale_tolerance" in raw:
+        kwargs["stale_tolerance"] = str(raw["stale_tolerance"])
+    return BehaviorTag(**kwargs)
 
 
 def _load_module(path: Path, root: Path) -> Module:

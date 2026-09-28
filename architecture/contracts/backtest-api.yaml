@@ -10,12 +10,12 @@ requires:
 
 provides:
   - id: backtest.run
-    kind: function
+    kind: operation
     signature: "backtest.run(strategy: Strategy, spec: BacktestSpec) -> BacktestResult"
     description: >
       Run a strategy over a closed time window. Raises ValueError when
       spec.start >= spec.end.
   - id: backtest.register_strategy
-    kind: function
+    kind: operation
     signature: "backtest.register_strategy(name: str, factory: Callable[[], Strategy]) -> None"
     description: Register a strategy implementation by name.

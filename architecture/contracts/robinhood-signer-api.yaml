@@ -1,7 +1,7 @@
 name: robinhood-signer-api
 version: 1
 description: >
-  The isolated signer process (G-SIGNER-01). The single boundary
+  The isolated signer process (G-S-G-01). The single boundary
   that may hold private-key material. No other module imports a
   private key or Keystore password; the main V1 process must not
   carry signing material. The signer accepts its password only from
@@ -12,23 +12,57 @@ requires:
 
 provides:
   - id: signer.sign
-    kind: function
-    signature: "signer.sign(tx_payload: bytes, chain_id: ChainId, key_id: KeyId) -> SignedTransaction"
+    kind: operation
+    input:  { schema: robinhood-signer-api.SignRequest }
+    output: { schema: robinhood-signer-api.SignedTransaction }
+    errors:
+      - { code: SIGNER_LOCKED,             recoverable: user_input }
+      - { code: SIGNER_UNKNOWN_KEY_ID,     recoverable: user_input }
+      - { code: SIGNER_PAYLOAD_REJECTED,   recoverable: permanent }
+      - { code: SIGNER_BACKEND_UNAVAILABLE, recoverable: transient }
+    behavior:
+      unit: bytes
+      time: wall_clock
+      idempotent: false
+      ordering: total
     description: >
       Sign the supplied payload with the named key. The signer is the
       only module permitted to read the encrypted Keystore and the
       only module that accepts the password. The signer is locked on
       restart.
+
   - id: signer.lock_state
-    kind: function
-    signature: "signer.lock_state() -> LockState"
+    kind: operation
+    input:  { schema: robinhood-signer-api.LockStateRequest }
+    output: { schema: robinhood-signer-api.LockState }
+    errors:
+      - { code: SIGNER_BACKEND_UNAVAILABLE, recoverable: transient }
+    behavior:
+      unit: decimal
+      time: wall_clock
+      idempotent: true
     description: >
       Return the current LockState. UNLOCKED when a key is available
       for signing; LOCKED otherwise. The execution layer must refuse
       to submit an unsigned payload when the state is LOCKED.
+
   - id: signer.public_address
-    kind: function
-    signature: "signer.public_address(key_id: KeyId) -> Address"
+    kind: operation
+    input:  { schema: robinhood-signer-api.PublicAddressRequest }
+    output: { schema: robinhood-protocol-api.Address }
+    errors:
+      - { code: SIGNER_UNKNOWN_KEY_ID,     recoverable: user_input }
+      - { code: SIGNER_BACKEND_UNAVAILABLE, recoverable: transient }
+    behavior:
+      unit: address
+      idempotent: true
     description: >
       Return the Address derived from the public component of the
       named key. Safe to expose; never returns the private component.
+
+  - id: signer.lock_state_vocabulary
+    kind: data
+    output: { schema: robinhood-signer-api.LockStateVocabulary }
+    description: >
+      Closed vocabulary of LockState values (LOCKED / UNLOCKED).
+      Adding a value is additive; renaming or removing is breaking.

@@ -11,7 +11,7 @@ requires:
 
 provides:
   - id: storage.reader.read_partition
-    kind: function
+    kind: operation
     signature: "storage.reader.read_partition(partition_key: PartitionKey) -> PartitionReadResult"
     description: >
       Resolve by (chain_id, contract_address, event_name, block_range).
@@ -19,29 +19,29 @@ provides:
       migrate_to_current. Raises ManifestMismatchError / BoundsMismatchError
       / UnqualifiedDatasetError rather than fabricating a result.
   - id: storage.writer.append_event
-    kind: function
+    kind: operation
     signature: "storage.writer.append_event(partition_key: PartitionKey, event: LogRecord) -> None"
     description: >
       Append a single event record to the named partition. Append-only;
       never overwrites or deletes. Returns None on success.
   - id: storage.manifest.resolve
-    kind: function
+    kind: operation
     signature: "storage.manifest.resolve(partition_key: PartitionKey) -> ManifestRow"
     description: >
       Resolve the manifest row for a partition key. Raises
       MissingPartitionError when no row matches.
   - id: storage.checkpoint.save
-    kind: function
+    kind: operation
     signature: "storage.checkpoint.save(state: CheckpointState) -> CheckpointHash"
     description: >
       Atomically save an ingestion checkpoint. Returns the canonical
       hash of the saved state.
   - id: storage.checkpoint.load
-    kind: function
+    kind: operation
     signature: "storage.checkpoint.load(hash: CheckpointHash) -> CheckpointState"
     description: Load a previously saved checkpoint by its canonical hash.
   - id: storage.reconciliation.run
-    kind: function
+    kind: operation
     signature: "storage.reconciliation.run(window: BlockWindow) -> ReconciliationReport"
     description: >
       Reconcile the storage window against the chain. Fails closed on
