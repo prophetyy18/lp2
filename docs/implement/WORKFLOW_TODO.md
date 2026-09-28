@@ -147,6 +147,4 @@ Still open from the same review (P1, not started):
       `blocked` value added for rejected work. The test suite now checks
       every state pair maps to a real label, which is what let the old
       default survive unnoticed.
-- [ ] `compute_module_state` misclassifies all-`changes_requested` as
-      `partial_mvp` and contains an unreachable branch.
 - [ ] `--reviewer-run` has no defined source.
