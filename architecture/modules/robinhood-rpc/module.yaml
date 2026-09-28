@@ -1,0 +1,19 @@
+name: robinhood-rpc
+description: >
+  Bounded JSON-RPC adapter (T020). Exposes only the closed method set
+  eth_blockNumber, eth_getBlockByNumber, eth_getLogs,
+  eth_getTransactionReceipt, eth_call, eth_chainId, eth_getCode.
+  Endpoint failover, classified retries, adaptive range splitting,
+  capability probing, redacted metrics.
+
+source: modules/robinhood-rpc
+provides_contracts:
+  - robinhood-rpc-api
+
+depends_on:
+  - contract: robinhood-protocol-api
+    uses:
+      - protocol.pool_key.parse
+      - protocol.identity.chain_id.parse
+      - protocol.identity.address.parse
+    reason: validate the chain_id, contract address and topic filter the caller supplied before issuing the JSON-RPC call

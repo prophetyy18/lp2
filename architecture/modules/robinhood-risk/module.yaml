@@ -1,0 +1,25 @@
+name: robinhood-risk
+description: >
+  Centralized approve/reject gateway (T070). Closed vocabulary
+  (APPROVED / REJECTED / WARNING / NO_NEW_RISK / AUTO_EXIT) over a
+  scoped context. Deny-by-default; no manual override. Every risk
+  decision is byte-identical under equal inputs and config versions.
+
+source: modules/robinhood-risk
+provides_contracts:
+  - robinhood-risk-api
+
+depends_on:
+  - contract: robinhood-protocol-api
+    uses:
+      - protocol.identity.chain_id.parse
+      - protocol.sizing.compute
+    reason: the gateway records the chain namespace and routes capital envelopes through the FixedRange sizer (T049)
+  - contract: robinhood-features-api
+    uses:
+      - features.quote.usdg
+    reason: T053 qualified USDG price is required for any USDG-denominated sizing and for the 5-minute emergency circuit breaker
+  - contract: robinhood-strategy-api
+    uses:
+      - strategy.validate_proposal
+    reason: every candidate that reaches risk must have passed the strategy-side validator; the gateway reruns validation before approval

@@ -1,0 +1,29 @@
+name: robinhood-execution-api
+version: 1
+description: >
+  Paper intent -> fill -> ledger, and deterministic V4 transaction
+  planning. Execution is risk-gated (every intent flows through the
+  risk contract) and signature-isolated (live signing reaches the
+  signer contract only). Execution does not choose strategy or
+  bypass central risk.
+
+requires:
+  - robinhood-protocol-api
+  - robinhood-risk-api
+  - robinhood-signer-api
+
+provides:
+  - id: execution.paper.fill
+    kind: function
+    signature: "execution.paper.fill(intent: ApprovedIntent, market_state: MarketState) -> Fill"
+    description: >
+      Translate an APPROVED intent into a deterministic paper fill
+      against the supplied market state (T071). Returns the Fill
+      record; persists to the paper ledger.
+  - id: execution.planner.build_transaction
+    kind: function
+    signature: "execution.planner.build_transaction(intent: ApprovedIntent, market_state: MarketState) -> UnsignedTransaction"
+    description: >
+      Deterministic V4 planner: build the unsigned transaction for
+      the approved intent against the supplied market state. The
+      returned payload is the exact bytes the signer signs.

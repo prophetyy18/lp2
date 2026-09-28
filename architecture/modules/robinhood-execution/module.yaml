@@ -1,0 +1,27 @@
+name: robinhood-execution
+description: >
+  Paper intent -> fill -> ledger (T071) and deterministic V4
+  transaction planning. Risk-gated: every flow reaches the risk
+  contract first. Signature-isolated: live signing reaches the signer
+  contract only. Execution does not choose strategy or bypass central
+  risk.
+
+source: modules/robinhood-execution
+provides_contracts:
+  - robinhood-execution-api
+
+depends_on:
+  - contract: robinhood-protocol-api
+    uses:
+      - protocol.pool_id.compute
+      - protocol.sizing.compute
+    reason: V4 transaction payloads need canonical PoolId and the FixedRange sizer for the typed amounts
+  - contract: robinhood-risk-api
+    uses:
+      - risk.evaluate
+    reason: every intent must pass the central risk gateway before execution plans or fills it; execution may not bypass risk
+  - contract: robinhood-signer-api
+    uses:
+      - signer.sign
+      - signer.lock_state
+    reason: live signing routes through the isolated signer process (G-SIGNER-01); execution never holds signing material itself

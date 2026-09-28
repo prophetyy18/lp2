@@ -1,0 +1,53 @@
+name: robinhood-application
+description: >
+  Application composition root. Wires protocol/rpc/storage/replay/
+  features/strategy/risk/execution/signer into typed product use
+  cases (BacktestUseCase T113, IngestUseCase T032, RealtimeUseCase
+  T072, ReduceOnlyUseCase T097, HistoricalReplayUseCase T110).
+  Composition root is the only place that selects concrete adapters
+  (ADR-016).
+
+source: modules/robinhood-application
+provides_contracts:
+  - robinhood-application-api
+
+depends_on:
+  - contract: robinhood-protocol-api
+    uses:
+      - protocol.pool_key.parse
+      - protocol.identity.chain_id.parse
+    reason: validate PoolKey / ChainId at the composition root before constructing the use case request
+  - contract: robinhood-storage-api
+    uses:
+      - storage.reader.read_partition
+      - storage.manifest.resolve
+    reason: every use case resolves its partition set through the reader and manifest
+  - contract: robinhood-replay-api
+    uses:
+      - replay.replayer.run
+      - replay.state.checkpoint
+    reason: BacktestUseCase, HistoricalReplayUseCase and ReduceOnlyUseCase compose the replayer and checkpoint readers
+  - contract: robinhood-features-api
+    uses:
+      - features.bars.compute
+      - features.position.value
+      - features.quote.usdg
+    reason: assemble the snapshot set the strategy layer reads
+  - contract: robinhood-strategy-api
+    uses:
+      - strategy.evaluate
+    reason: the BacktestUseCase and RealtimeUseCase call strategy.evaluate through the strategy contract, never the implementation module
+  - contract: robinhood-risk-api
+    uses:
+      - risk.evaluate
+    reason: every approved intent routes through the central risk gateway
+  - contract: robinhood-execution-api
+    uses:
+      - execution.paper.fill
+      - execution.planner.build_transaction
+    reason: BacktestUseCase composes the paper fill path; RealtimeUseCase and ReduceOnlyUseCase compose the planner
+  - contract: robinhood-signer-api
+    uses:
+      - signer.lock_state
+      - signer.public_address
+    reason: the composition root checks signer state and resolves the public address without holding any private material

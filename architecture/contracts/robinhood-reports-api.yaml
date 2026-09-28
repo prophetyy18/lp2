@@ -1,0 +1,43 @@
+name: robinhood-reports-api
+version: 1
+description: >
+  Publication of run manifests, run state, validation evidence, and
+  the versioned T101/T102 compatibility view over current artifacts.
+  The reports layer is read-only with respect to upstream state; it
+  never mutates storage or replay state.
+
+requires:
+  - robinhood-application-api
+  - robinhood-replay-api
+  - robinhood-features-api
+
+provides:
+  - id: reports.manifest.publish
+    kind: function
+    signature: "reports.manifest.publish(run_id: RunId, output: OrchestratorOutput) -> ManifestPath"
+    description: >
+      Publish the T112-versioned manifest and simulation-evidence
+      bundle. The publication is atomic; partial writes fail closed.
+  - id: reports.run_state.publish
+    kind: function
+    signature: "reports.run_state.publish(run_id: RunId, state: RunState) -> RunStatePath"
+    description: >
+      Publish the durable RunState record. The published state
+      matches what the orchestrator wrote to RunStateStore.
+  - id: reports.validation.publish
+    kind: function
+    signature: "reports.validation.publish(run_id: RunId, evidence: ValidationEvidence) -> ValidationPath"
+    description: Publish the validation evidence bundle for the run.
+  - id: reports.evidence_adapter.t101_view
+    kind: function
+    signature: "reports.evidence_adapter.t101_view(manifest: ManifestPath) -> T101View"
+    description: >
+      T111 versioned compatibility view over the canonical T101
+      panel bindings. Resolves canonical event bytes from T100
+      references; never reopens the predecessor publication path.
+  - id: reports.evidence_adapter.t102_view
+    kind: function
+    signature: "reports.evidence_adapter.t102_view(manifest: ManifestPath) -> T102View"
+    description: >
+      T111 versioned compatibility view over the canonical T102
+      model bindings. Same resolution rules as t101_view.

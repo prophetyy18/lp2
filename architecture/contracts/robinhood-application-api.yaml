@@ -1,0 +1,65 @@
+name: robinhood-application-api
+version: 1
+description: >
+  Application composition root. Wires protocol/rpc/storage/replay/
+  features/strategy/risk/execution/signer into typed product use
+  cases. The composition root is the only place that selects concrete
+  adapters for a product use case; it makes no hidden fallback
+  choice (ADR-016).
+
+requires:
+  - robinhood-protocol-api
+  - robinhood-storage-api
+  - robinhood-replay-api
+  - robinhood-features-api
+  - robinhood-strategy-api
+  - robinhood-risk-api
+  - robinhood-execution-api
+  - robinhood-signer-api
+
+provides:
+  - id: application.backtest.start
+    kind: function
+    signature: "application.backtest.start(request: BacktestRequest) -> BacktestResult"
+    description: >
+      T113 stable public backtest use case. Loads events through the
+      registered T100 partitions; composes T040/T041/T050/T061/T112;
+      publishes the manifest and evidence. Fails closed on every
+      failure path; the predecessor T109 writer is unreachable through
+      this entry.
+  - id: application.backtest.resume
+    kind: function
+    signature: "application.backtest.resume(run_id: RunId) -> BacktestResult"
+    description: >
+      Resume a previously persisted backtest run from its
+      RunStateStore record without duplicating it. Composes the same
+      pipeline as start; the resume path is symmetric with start.
+  - id: application.historical_replay.compose
+    kind: function
+    signature: "application.historical_replay.compose(snapshot_set: SnapshotSet) -> ReplayFrames"
+    description: >
+      T110 qualified MarketState/RunState composition. Returns the
+      replay frames the Web read models consume; projects T112
+      evidence without callbacks.
+  - id: application.ingest.run
+    kind: function
+    signature: "application.ingest.run(request: IngestRequest) -> IngestResult"
+    description: >
+      T032 historical ingestion: plan ranges, route by capability,
+      write to storage, persist the run manifest. The checkpoint
+      cannot advance past any failed / uncovered interval.
+  - id: application.reduce_only.execute
+    kind: function
+    signature: "application.reduce_only.execute(request: ReduceOnlyRequest) -> Result"
+    description: >
+      T097 reduce-only write path. Submits RiskIntentSource =
+      MANUAL_REDUCE_ONLY; the risk gateway handles the rest. Used by
+      the Web reduce action and the corresponding CLI subcommand.
+  - id: application.realtime.tick
+    kind: function
+    signature: "application.realtime.tick(pool_id: PoolId) -> RunState"
+    description: >
+      T072 single-decision realtime evaluation: assemble the snapshot
+      set, run the strategy, evaluate risk, return the resulting
+      RunState. Does not submit a transaction; that is the reduce-only
+      path.

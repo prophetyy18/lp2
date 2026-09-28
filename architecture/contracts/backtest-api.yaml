@@ -1,0 +1,21 @@
+name: backtest-api
+version: 1
+description: >
+  Strategy simulation over historical data. Publishes the backtest engine's
+  entry point; strategies register into it rather than being imported by it.
+
+requires:
+  - market-data-api
+  - pricing-api
+
+provides:
+  - id: backtest.run
+    kind: function
+    signature: "backtest.run(strategy: Strategy, spec: BacktestSpec) -> BacktestResult"
+    description: >
+      Run a strategy over a closed time window. Raises ValueError when
+      spec.start >= spec.end.
+  - id: backtest.register_strategy
+    kind: function
+    signature: "backtest.register_strategy(name: str, factory: Callable[[], Strategy]) -> None"
+    description: Register a strategy implementation by name.

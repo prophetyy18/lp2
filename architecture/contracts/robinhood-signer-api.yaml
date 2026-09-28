@@ -1,0 +1,34 @@
+name: robinhood-signer-api
+version: 1
+description: >
+  The isolated signer process (G-SIGNER-01). The single boundary
+  that may hold private-key material. No other module imports a
+  private key or Keystore password; the main V1 process must not
+  carry signing material. The signer accepts its password only from
+  a non-echoing interactive terminal.
+
+requires:
+  - robinhood-protocol-api
+
+provides:
+  - id: signer.sign
+    kind: function
+    signature: "signer.sign(tx_payload: bytes, chain_id: ChainId, key_id: KeyId) -> SignedTransaction"
+    description: >
+      Sign the supplied payload with the named key. The signer is the
+      only module permitted to read the encrypted Keystore and the
+      only module that accepts the password. The signer is locked on
+      restart.
+  - id: signer.lock_state
+    kind: function
+    signature: "signer.lock_state() -> LockState"
+    description: >
+      Return the current LockState. UNLOCKED when a key is available
+      for signing; LOCKED otherwise. The execution layer must refuse
+      to submit an unsigned payload when the state is LOCKED.
+  - id: signer.public_address
+    kind: function
+    signature: "signer.public_address(key_id: KeyId) -> Address"
+    description: >
+      Return the Address derived from the public component of the
+      named key. Safe to expose; never returns the private component.

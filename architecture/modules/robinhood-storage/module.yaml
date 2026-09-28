@@ -1,0 +1,17 @@
+name: robinhood-storage
+description: >
+  Append-only Parquet partitions (T031), manifest store, durable
+  checkpoints, partition reconciliation (T037), reorg handling (T033).
+  Reader is the only sanctioned way to consume a partition: verifies
+  SHA-256, block bounds, and the qualification row.
+
+source: modules/robinhood-storage
+provides_contracts:
+  - robinhood-storage-api
+
+depends_on:
+  - contract: robinhood-protocol-api
+    uses:
+      - protocol.identity.chain_id.parse
+      - protocol.identity.address.parse
+    reason: identify partitions by canonical (chain_id, contract_address, event_name, block_range); reject malformed keys at the writer boundary

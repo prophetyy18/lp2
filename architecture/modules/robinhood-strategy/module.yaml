@@ -1,0 +1,24 @@
+name: robinhood-strategy
+description: >
+  Pure observation -> CandidateAction (T060). Versioned snapshots,
+  substitutable RegimeModel / FeeOpportunityModel, deterministic clock,
+  seeded random source. Strategy registry (T068) owns the closed set
+  of registered strategy identities. Layer purity: no RPC, no storage,
+  no signing, no execution (ADR-006).
+
+source: modules/robinhood-strategy
+provides_contracts:
+  - robinhood-strategy-api
+
+depends_on:
+  - contract: robinhood-protocol-api
+    uses:
+      - protocol.pool_key.parse
+      - protocol.sizing.compute
+    reason: validate proposal ticks against the V4 int24 domain and pass the Range to the FixedRange sizer for capital-envelope enforcement
+  - contract: robinhood-features-api
+    uses:
+      - features.bars.compute
+      - features.position.value
+      - features.quote.usdg
+    reason: the strategy reads MarketSnapshot inputs (bars, valuation, USDG quote) from the features layer; it does not recompute them

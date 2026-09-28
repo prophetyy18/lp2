@@ -1,0 +1,49 @@
+name: robinhood-protocol-api
+version: 1
+description: >
+  Protocol/domain layer. Pure V4 identities, math, and FixedRange sizing.
+  The lowest layer of the LP architecture: depends on no other contract,
+  so every other contract may build on it. No IO, no time, no randomness
+  (ADR-006). Integer arithmetic only on the protocol/valuation path
+  (ADR-004); Decimal appears only at the explicitly named display boundary.
+
+provides:
+  - id: protocol.pool_key.parse
+    kind: function
+    signature: "protocol.pool_key.parse(raw: bytes) -> PoolKey"
+    description: >
+      Decode a V4 PoolKey from its ABI-encoded form. Enforces the V4
+      ordering invariant (currency0 < currency1 as uint160). Raises
+      ValueError on malformed input.
+  - id: protocol.pool_id.compute
+    kind: function
+    signature: "protocol.pool_id.compute(key: PoolKey) -> PoolId"
+    description: >
+      Compute PoolId as keccak256 of the ABI-encoded PoolKey. Equal
+      inputs produce byte-identical PoolIds in any process.
+  - id: protocol.identity.chain_id.parse
+    kind: function
+    signature: "protocol.identity.chain_id.parse(s: str) -> ChainId"
+    description: Parse a decimal string into a positive ChainId.
+  - id: protocol.identity.address.parse
+    kind: function
+    signature: "protocol.identity.address.parse(s: str) -> Address"
+    description: Parse an EIP-55 mixed-case or all-lowercase hex string into a 20-byte Address.
+  - id: protocol.sqrt_price.to_display
+    kind: function
+    signature: "protocol.sqrt_price.to_display(sqrt_price_x96: int, decimals0: int, decimals1: int) -> Decimal"
+    description: >
+      The single named display boundary for sqrtPriceX96 (ADR-009).
+      Integer input only; output is a Decimal rounded to 18 fractional
+      digits. Inverse direction does not exist in V1.
+  - id: protocol.sizing.compute
+    kind: function
+    signature: "protocol.sizing.compute(range: TickRange, capital_q64_64: int, fee: int, hook_evidence: HookEvidence) -> SizingDecision"
+    description: >
+      Fixed-Range, single-liquidityDelta sizing (T049). Enforces
+      integer math, Hook BalanceDelta verification, native ETH gas
+      reservation, both raw-token caps after Hook/Gas effects, and the
+      minimum-economic-size floor. The sizer never widens the Range to
+      fit a cap.
+
+requires: []

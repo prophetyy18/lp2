@@ -1,0 +1,32 @@
+name: robinhood-risk-api
+version: 1
+description: >
+  Centralized approve/reject gateway. The single entry point that
+  performs the full risk check pipeline before any intent reaches
+  paper execution or (after T094) the isolated signer. The gateway
+  is deny-by-default: missing data, unknown hooks, or reconciliation
+  failure reject the operation rather than fall back to a default.
+
+requires:
+  - robinhood-protocol-api
+  - robinhood-features-api
+  - robinhood-strategy-api
+
+provides:
+  - id: risk.evaluate
+    kind: function
+    signature: "risk.evaluate(intent: RiskIntent, context: RiskContext, config: RiskConfig) -> RiskDecision"
+    description: >
+      The full pipeline (T070). Returns a RiskDecision carrying
+      RiskVerdict (APPROVED / REJECTED / WARNING / NO_NEW_RISK /
+      AUTO_EXIT), RiskScope (GLOBAL / POOL / TOKEN / STRATEGY), and
+      a reason code. The decision is byte-identical for two calls
+      with equal inputs under equal configuration versions.
+  - id: risk.config.current
+    kind: function
+    signature: "risk.config.current(version_id: str) -> RiskConfig"
+    description: >
+      Resolve the RiskConfig for the named version_id. A configuration
+      change bumps version_id; the decision records the version it
+      was produced under so a future config cannot retroactively alter
+      it.

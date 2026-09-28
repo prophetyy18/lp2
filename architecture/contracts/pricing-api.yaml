@@ -1,0 +1,32 @@
+name: pricing-api
+version: 1
+description: >
+  Position and risk valuation. Built on market-data-api; consumers never read
+  market-data implementation directly for anything pricing already exposes.
+
+requires:
+  - market-data-api
+
+provides:
+  - id: position.mark
+    kind: function
+    signature: "position.mark(portfolio: Portfolio, at: datetime) -> Decimal"
+    description: >
+      Mark-to-market value of a portfolio. Currency is the base currency of the
+      portfolio, rounded to 8 decimal places.
+  - id: position.exposure
+    kind: function
+    signature: "position.exposure(portfolio: Portfolio, factor: str) -> Decimal"
+    description: >
+      Exposure to a risk factor. The factor must be one of the names returned
+      by `position.risk_factors`.
+  - id: position.risk_factors
+    kind: function
+    signature: "position.risk_factors() -> list[str]"
+    description: >
+      Supported risk factor names. This is a contract extension point, so
+      adding a name here requires a contract version bump.
+  - id: pricing.quote
+    kind: function
+    signature: "pricing.quote(symbol: str, at: datetime) -> Decimal"
+    description: Mid price for a single symbol.

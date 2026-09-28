@@ -1,0 +1,23 @@
+name: robinhood-features
+description: >
+  Point-in-time market features: bars (T050), LP position valuation
+  (T051), attribution (T052), USDG quote (T053). Pure functions of
+  the supplied snapshots and PoolCheckpoint; integer arithmetic only
+  on the protocol / valuation path.
+
+source: modules/robinhood-features
+provides_contracts:
+  - robinhood-features-api
+
+depends_on:
+  - contract: robinhood-protocol-api
+    uses:
+      - protocol.pool_id.compute
+      - protocol.sqrt_price.to_display
+      - protocol.sizing.compute
+    reason: PoolId identity, the named display boundary, and FixedRange sizing are all features-layer primitives
+  - contract: robinhood-replay-api
+    uses:
+      - replay.state.checkpoint
+      - replay.fee_surface.project
+    reason: bars, valuation, and attribution read PoolCheckpoint and the T104 fee projection; never compute their own fee path

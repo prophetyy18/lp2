@@ -1,0 +1,12 @@
+name: pricing
+description: Valuation, position marking and risk factor exposure.
+
+source: modules/pricing
+provides_contracts:
+  - pricing-api
+
+depends_on:
+  - contract: market-data-api
+    uses:
+      - series.get
+    reason: fetch closing prices needed to mark positions

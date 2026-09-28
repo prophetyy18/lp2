@@ -1,0 +1,19 @@
+name: web-api
+version: 1
+description: >
+  HTTP surface. Translates requests into contract calls; owns no business rules.
+
+requires:
+  - pricing-api
+
+provides:
+  - id: http.route
+    kind: declaration
+    signature: "http.route(method: str, path: str, contract_call: str) -> Route"
+    description: >
+      Declares a route in terms of a capability id from another contract, not
+      in terms of a Python function.
+  - id: http.serve
+    kind: function
+    signature: "http.serve(host: str, port: int) -> None"
+    description: Start the server.

@@ -1,0 +1,8 @@
+name: market-data
+description: Ingestion, normalisation and storage of market time series.
+
+source: modules/market-data
+provides_contracts:
+  - market-data-api
+
+depends_on: []

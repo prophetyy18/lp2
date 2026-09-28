@@ -1,0 +1,45 @@
+name: robinhood-rpc-api
+version: 1
+description: >
+  Bounded JSON-RPC adapter. The only RPC surface V1 exposes is the
+  closed method set in T020 (eth_blockNumber, eth_getBlockByNumber,
+  eth_getLogs, eth_getTransactionReceipt, eth_call, eth_chainId,
+  eth_getCode). No arbitrary RPC, no signing, no broadcasting.
+
+requires:
+  - robinhood-protocol-api
+
+provides:
+  - id: rpc.adapter.block_header
+    kind: function
+    signature: "rpc.adapter.block_header(chain_id: ChainId, block_ref: BlockRef) -> BlockHeader"
+    description: >
+      Fetch one non-hydrated block header by number or hash. Bounded
+      retry on 429 / 5xx / timeout only; no retry on malformed params.
+  - id: rpc.adapter.logs
+    kind: function
+    signature: "rpc.adapter.logs(chain_id: ChainId, from_block: int, to_block: int, topic_filter: TopicFilter) -> list[LogRecord]"
+    description: >
+      Bounded eth_getLogs with adaptive range splitting. One
+      pool-filtered topic0 OR query per stream, never one per event
+      type.
+  - id: rpc.adapter.call
+    kind: function
+    signature: "rpc.adapter.call(chain_id: ChainId, block_ref: BlockRef, to: Address, data: bytes) -> bytes"
+    description: >
+      Block-pinned eth_call. Non-retryable (a malformed call returns
+      the same error on retry; classify as non-retryable so the caller
+      sees the real failure immediately).
+  - id: rpc.adapter.chain_id
+    kind: function
+    signature: "rpc.adapter.chain_id(url: str) -> ChainId"
+    description: >
+      Probe eth_chainId for one endpoint. Used by capability probes
+      and the chain-id verification gate.
+  - id: rpc.adapter.capability_probe
+    kind: function
+    signature: "rpc.adapter.capability_probe(urls: list[str]) -> CapabilityReport"
+    description: >
+      Per-endpoint capability probe (T024). Reports measured block
+      range cap, log interval cap, archive support, and finality. The
+      ingestion router uses this to choose endpoints and ranges.
