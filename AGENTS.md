@@ -148,18 +148,27 @@ registration and a reopened pass both land there, and nothing else does —
 so an interrupted run is never ambiguous between "not started" and
 "finished, awaiting review".
 
-The aggregated `module_state` is computed from per-capability states and
-written by the CLI on every save. Its six values, most conclusive first:
-`complete` (all consumable) → `partially_complete` (some consumable) →
-`rework` (a reviewer rejected something and named why; someone owes a
-fix) → `partial_mvp` (an unconsumable prototype exists) → `planned`
-(nothing started) → `abandoned` (everything closed).
+A module also carries a three-value summary, and it is a **summary, never a
+gate**:
 
-`rework` is deliberately *not* called "blocked". Nothing is waiting on
-anyone: the reason codes say what to fix, `retry` is available, and the
-work is actionable now. "Blocked" is what an unconsumable upstream looks
-like, which is a different condition and is reported by
-`state upstream`, not by this field.
+  - `not_started`  nothing worked on yet (all `pending`, or none declared)
+  - `in_progress`  work has started and has not landed
+  - `complete`     every capability is `fully_approved`
+
+It is computed from the capability rows and printed as a comment by
+`state show`; it is deliberately **not stored** in `STATE.yaml`. Three
+values, because three is what it can say without repeating the rows
+underneath it. Its old six-value form encoded details the rows already
+carried — `rework` restated `changes_requested` (whose reason codes say
+more), `partial_mvp` restated `mvp_developed` — and `partially_complete`
+claimed a granularity that does not exist: **consumption is per capability,
+so a module is never a consumable unit.** Whether another module may
+depend on this one is answered by `state upstream`, per capability.
+
+Two consequences of the three-value set, so they are not mistaken for
+bugs: a module whose capabilities were all abandoned reports
+`in_progress` (there is no fourth value for "started, then closed"), and
+adding a capability to a `complete` module drops it back to `in_progress`.
 
 An interrupted developer or reviewer run does not create a new state. To
 resume, the dispatcher reads STATE, the approved Card, existing source and

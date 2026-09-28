@@ -83,12 +83,19 @@ class CapabilityState(str, Enum):
 
 
 class ModuleState(str, Enum):
-    PLANNED = "planned"
-    PARTIAL_MVP = "partial_mvp"
-    REWORK = "rework"
-    PARTIALLY_COMPLETE = "partially_complete"
+    """How far along a module is. A summary, never a gate.
+
+    Three values, because three is what it can say without repeating the
+    capabilities underneath it. The previous six (`planned / partial_mvp /
+    rework / partially_complete / complete / abandoned`) each encoded a
+    detail the capability rows already carry, and one of them --
+    `partially_complete` -- implied a granularity that does not exist:
+    consumption is per capability, so a module is never a consumable unit.
+    """
+
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
     COMPLETE = "complete"
-    ABANDONED = "abandoned"
 
 
 @dataclass
@@ -128,12 +135,24 @@ class CapabilityRecord:
 class ModuleRecord:
     name: str
     capabilities: dict[str, CapabilityRecord] = field(default_factory=dict)
-    module_state: str = "planned"
+
+    @property
+    def module_state(self) -> str:
+        """Derived, and deliberately not a stored field.
+
+        It used to be persisted alongside the capabilities it summarises.
+        Nothing ever read it -- not even `load_state`, which recomputed it
+        and overwrote whatever the file said -- so it was a copy that could
+        silently disagree with the rows beneath it, and hand-editing STATE
+        was forbidden anyway. Computing it here means drift is impossible by
+        construction rather than by discipline, and the file keeps facts
+        only.
+        """
+        return compute_module_state(self.capabilities.values())
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "module": self.name,
-            "module_state": self.module_state,
             "capabilities": {
                 cid: rec.to_dict() for cid, rec in sorted(self.capabilities.items())
             },
@@ -146,9 +165,7 @@ class ModuleRecord:
         if not isinstance(caps_raw, dict):
             raise StateError(f"STATE.yaml: capabilities must be a mapping, got {type(caps_raw).__name__}")
         caps = {str(cid): CapabilityRecord.from_dict(v) for cid, v in caps_raw.items()}
-        mod = cls(name=name, capabilities=caps)
-        mod.module_state = compute_module_state(caps.values())
-        return mod
+        return cls(name=name, capabilities=caps)
 
 
 def load_state(module: str, root: Path | None = None) -> ModuleRecord:
@@ -171,7 +188,6 @@ def load_state(module: str, root: Path | None = None) -> ModuleRecord:
 def save_state(record: ModuleRecord, root: Path | None = None) -> Path:
     if root is None:
         root = STATE_ROOT
-    record.module_state = compute_module_state(record.capabilities.values())
     path = root / record.name / "STATE.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -184,31 +200,29 @@ def save_state(record: ModuleRecord, root: Path | None = None) -> Path:
 def compute_module_state(records: Iterable[CapabilityRecord]) -> str:
     """Aggregate capability states into one module_state string.
 
-    Order matters: the first matching case wins, and it runs from most to
-    least conclusive. The old version fell through to `partial_mvp` for
-    anything it did not recognise, so a module whose every capability had
-    been rejected by a reviewer was reported as holding MVPs -- a label that
-    has since stopped meaning "work in progress" at all, since an MVP is no
-    longer a path to completion.
+    Three outcomes, and every one of them is a question about *work*, never
+    about consumability. That distinction is the whole point: whether
+    another module may depend on this one is answered per capability by the
+    upstream gate, so a module-level "partially available" would describe a
+    granularity that does not exist.
+
+      complete     every capability is fully_approved -- the module is done
+      not_started  nothing has been worked on (all pending, or none declared)
+      in_progress  everything else: work has started and has not landed
+
+    A module whose capabilities were all abandoned reports `in_progress`:
+    three values cannot also say "started and then deliberately closed", and
+    `in_progress` at least records that it was touched. Adding a capability
+    to a `complete` module drops it back to `in_progress`, which is the
+    intended ratchet -- the new work is genuinely outstanding.
     """
     states = {r.state for r in records}
     if not states or states == {CapabilityState.PENDING.value}:
         # nothing declared, or nothing built yet
-        return ModuleState.PLANNED.value
-    if states == {CapabilityState.ABANDONED.value}:
-        return ModuleState.ABANDONED.value
+        return ModuleState.NOT_STARTED.value
     if states == {CapabilityState.FULLY_APPROVED.value}:
         return ModuleState.COMPLETE.value
-    if CapabilityState.FULLY_APPROVED.value in states:
-        # some consumable, the rest not yet
-        return ModuleState.PARTIALLY_COMPLETE.value
-    if CapabilityState.CHANGES_REQUESTED.value in states:
-        # a reviewer said work is owed and named why
-        return ModuleState.REWORK.value
-    if CapabilityState.MVP_DEVELOPED.value in states:
-        return ModuleState.PARTIAL_MVP.value
-    # only pending and/or abandoned, mixed: work is planned, not started
-    return ModuleState.PLANNED.value
+    return ModuleState.IN_PROGRESS.value
 
 
 def _now_iso() -> str:
@@ -749,6 +763,9 @@ def cmd_show(args: argparse.Namespace) -> int:
             )
         yaml.safe_dump({args.capability: rec.to_dict()}, sys.stdout, sort_keys=False)
     else:
+        # A comment, not a field: the summary belongs to the reader, not to
+        # the file, so the YAML below stays facts only.
+        print(f"# module_state: {record.module_state}")
         yaml.safe_dump(record.to_dict(), sys.stdout, sort_keys=False)
     return 0
 

@@ -196,3 +196,28 @@ Still open from the same review (P1, not started):
       proves a run actually touched files — and it runs before the
       reviewer, not at the state transition, so a refusal here is a
       backstop rather than the primary control.
+- [x] `module_state` was a stored copy that nothing read, saying six things
+      the capability rows already said. `from_dict` recomputed it on load and
+      overwrote whatever the file claimed, so the column on disk was
+      decorative: a hand-edited `module_state: complete` over two `pending`
+      capabilities was silently ignored and the CLI printed the right answer,
+      meaning nobody could ever discover the file had been corrupted. Dropped
+      from `to_dict` and made a computed property, so the file holds facts
+      only and drift is impossible by construction rather than by
+      discipline; `state show` prints it as a comment. Cut from six labels
+      to three (`not_started / in_progress / complete`), because six was
+      more than the rows beneath can justify: `rework` restated
+      `changes_requested` (whose reason codes say more), `partial_mvp`
+      restated `mvp_developed`, and `partially_complete` implied that a
+      module is partly consumable — a granularity that does not exist, since
+      consumption is per capability and `state upstream` is where that is
+      decided. The three values each answer a question about *work*, and two
+      edge cases follow from the smaller set and are documented as intended:
+      an all-abandoned module is `in_progress` (no fourth value for
+      "started, then closed"), and adding a capability to a `complete` module
+      ratchets it back to `in_progress`. The old six survived a long time
+      because they were well tested — the fix that made every rejected
+      capability report as `partial_mvp` was a real one — and being
+      carefully tested is not a reason to keep a field no consumer needs.
+      It is the same failure as `reviewer_run`: attention spent on a
+      maintainable artifact that never got a reader.

@@ -38,15 +38,14 @@ class StateTransitionTests(unittest.TestCase):
     def test_pending_to_mvp_is_allowed(self) -> None:
         rec = self._record()
         rec.capabilities["alpha.one"].state = "mvp_developed"
-        rec.module_state = compute_module_state(rec.capabilities.values())
-        self.assertEqual(rec.module_state, "partial_mvp")
+        self.assertEqual(rec.module_state, "in_progress")
 
     def test_only_mvp_can_be_fully_approved(self) -> None:
         # pending -> fully_approved is allowed (full mode path)
         rec = self._record()
         rec.capabilities["alpha.one"].state = "fully_approved"
         self.assertEqual(
-            compute_module_state(rec.capabilities.values()), "partially_complete"
+            compute_module_state(rec.capabilities.values()), "in_progress"
         )
 
     def test_full_approval_for_all_capabilities_makes_module_complete(self) -> None:
@@ -57,14 +56,18 @@ class StateTransitionTests(unittest.TestCase):
                 "alpha.two": CapabilityRecord(state="fully_approved", mode="full"),
             },
         )
-        rec.module_state = compute_module_state(rec.capabilities.values())
         self.assertEqual(rec.module_state, "complete")
 
-    def test_pending_only_module_is_planned(self) -> None:
+    def test_pending_only_module_is_not_started(self) -> None:
         rec = self._record()
-        self.assertEqual(compute_module_state(rec.capabilities.values()), "planned")
+        self.assertEqual(compute_module_state(rec.capabilities.values()), "not_started")
 
-    def test_all_abandoned_makes_module_abandoned(self) -> None:
+    def test_all_abandoned_is_in_progress(self) -> None:
+        """Three values cannot also say "started, then deliberately closed".
+
+        `in_progress` at least records that the module was touched, which is
+        the fact the three-value set is able to carry.
+        """
         rec = ModuleRecord(
             name="alpha",
             capabilities={
@@ -72,7 +75,7 @@ class StateTransitionTests(unittest.TestCase):
                 "alpha.two": CapabilityRecord(state="abandoned"),
             },
         )
-        self.assertEqual(compute_module_state(rec.capabilities.values()), "abandoned")
+        self.assertEqual(compute_module_state(rec.capabilities.values()), "in_progress")
 
     def test_round_trip_yaml(self) -> None:
         rec = self._record()
@@ -82,16 +85,40 @@ class StateTransitionTests(unittest.TestCase):
         loaded = load_state("alpha", self.root)
         self.assertEqual(loaded.capabilities["alpha.one"].state, "mvp_developed")
         self.assertEqual(loaded.capabilities["alpha.one"].manifest, "manifests/one.md")
-        self.assertEqual(loaded.module_state, "partial_mvp")
+        self.assertEqual(loaded.module_state, "in_progress")
+
+    def test_module_state_is_not_written_to_the_file(self) -> None:
+        """The summary is a display value; the file keeps facts only.
+
+        It used to be persisted, and nothing read it -- `load_state`
+        recomputed it and overwrote whatever the file claimed, so a wrong
+        value sat there silently. If this test fails, the copy is back.
+        """
+        rec = self._record()
+        rec.capabilities["alpha.one"].state = "fully_approved"
+        path = save_state(rec, self.root)
+        self.assertNotIn("module_state", path.read_text(encoding="utf-8"))
+
+    def test_a_stale_module_state_in_the_file_is_ignored(self) -> None:
+        """A hand-edited or corrupted copy cannot mislead the CLI."""
+        rec = self._record()
+        path = save_state(rec, self.root)
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "module: alpha", "module: alpha\nmodule_state: complete"
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(load_state("alpha", self.root).module_state, "not_started")
 
     def test_load_missing_module_yields_empty_record(self) -> None:
         rec = load_state("ghost", self.root)
         self.assertEqual(rec.name, "ghost")
         self.assertEqual(rec.capabilities, {})
 
-    def test_module_state_default_is_planned(self) -> None:
+    def test_module_state_of_a_module_with_no_capabilities(self) -> None:
         rec = ModuleRecord(name="empty")
-        self.assertEqual(compute_module_state(rec.capabilities.values()), "planned")
+        self.assertEqual(compute_module_state(rec.capabilities.values()), "not_started")
 
 
 # Fixed timestamps so the review-after-manifest ordering check is exercised
@@ -778,54 +805,77 @@ class StateCLITests(unittest.TestCase):
 
 
 class ModuleStateAggregationTests(unittest.TestCase):
-    """The aggregate label must not claim more than the capabilities show."""
+    """The aggregate must say something the capability rows do not already say."""
 
     @staticmethod
     def _state(*states: str) -> str:
         recs = [CapabilityRecord(state=s) for s in states]
         return compute_module_state(recs)
 
-    def test_every_rejected_capability_is_rework_not_partial_mvp(self) -> None:
-        # the misclassification: an MVP label for work that has none
-        self.assertEqual(self._state("changes_requested"), "rework")
+    def test_three_values_and_no_more(self) -> None:
+        """Each label must be a fact about work, not a restatement of a row.
+
+        The old set had six, and each of the extra three encoded something
+        the rows below already said: `rework` restated `changes_requested`
+        (whose reason codes say more), `partial_mvp` restated
+        `mvp_developed`, and `partially_complete` claimed a granularity that
+        does not exist, since consumption is per capability and a module is
+        never a consumable unit.
+        """
+        from tools.implement.state import ModuleState
+
         self.assertEqual(
-            self._state("changes_requested", "changes_requested"), "rework"
+            {m.value for m in ModuleState},
+            {"not_started", "in_progress", "complete"},
         )
 
-    def test_rejected_alongside_other_work_is_rework(self) -> None:
-        self.assertEqual(
-            self._state("pending", "changes_requested"), "rework"
-        )
-        self.assertEqual(
-            self._state("mvp_developed", "changes_requested"), "rework"
-        )
+    def test_nothing_touched_is_not_started(self) -> None:
+        self.assertEqual(self._state("pending"), "not_started")
+        self.assertEqual(self._state("pending", "pending"), "not_started")
+        self.assertEqual(self._state(), "not_started")
 
-    def test_rejected_alongside_an_approved_capability_is_partially_complete(self) -> None:
-        # one consumable capability is the more useful fact than the rejection
-        self.assertEqual(
-            self._state("fully_approved", "changes_requested"),
-            "partially_complete",
-        )
+    def test_all_approved_is_the_only_complete(self) -> None:
+        """`complete` means every capability is consumable, and nothing else.
 
-    def test_abandoned_mixed_with_pending_is_planned(self) -> None:
-        # not partial_mvp, and not abandoned: the owner closed one, work remains
-        self.assertEqual(self._state("abandoned", "pending"), "planned")
-
-    def test_mvp_alone_or_mixed_is_partial_mvp(self) -> None:
-        self.assertEqual(self._state("mvp_developed"), "partial_mvp")
-        self.assertEqual(self._state("mvp_developed", "pending"), "partial_mvp")
-        self.assertEqual(self._state("mvp_developed", "abandoned"), "partial_mvp")
-
-    def test_approved_alongside_anything_else_is_partially_complete(self) -> None:
-        for other in ("pending", "mvp_developed", "abandoned"):
-            self.assertEqual(
-                self._state("fully_approved", other), "partially_complete"
-            )
-
-    def test_uniform_states(self) -> None:
-        self.assertEqual(self._state("pending"), "planned")
+        One approved capability out of two is not a module-level fact about
+        availability -- it is two rows, one green. The upstream gate is where
+        per-capability consumability is decided.
+        """
         self.assertEqual(self._state("fully_approved"), "complete")
-        self.assertEqual(self._state("abandoned"), "abandoned")
+        self.assertEqual(
+            self._state("fully_approved", "fully_approved"), "complete"
+        )
+
+    def test_partial_approval_is_in_progress_not_a_fourth_label(self) -> None:
+        self.assertEqual(self._state("fully_approved", "pending"), "in_progress")
+        self.assertEqual(
+            self._state("fully_approved", "changes_requested"), "in_progress"
+        )
+        self.assertEqual(
+            self._state("fully_approved", "mvp_developed"), "in_progress"
+        )
+
+    def test_any_work_started_is_in_progress(self) -> None:
+        for states in (
+            ("mvp_developed",),
+            ("changes_requested",),
+            ("mvp_developed", "changes_requested"),
+            ("pending", "changes_requested"),
+            ("pending", "abandoned"),
+            ("mvp_developed", "abandoned"),
+            ("abandoned",),
+            ("abandoned", "abandoned"),
+        ):
+            self.assertEqual(self._state(*states), "in_progress", states)
+
+    def test_adding_a_capability_ratchets_complete_back_to_in_progress(self) -> None:
+        """The new work is genuinely outstanding, so the module is not done.
+
+        This is why `module_state` cannot be cached without also being
+        invalidated on registration -- which is a good reason not to store it.
+        """
+        self.assertEqual(self._state("fully_approved"), "complete")
+        self.assertEqual(self._state("fully_approved", "pending"), "in_progress")
 
     def test_every_capability_state_maps_to_some_label(self) -> None:
         """No state may fall through to a default, which is how the bug survived."""
