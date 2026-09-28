@@ -9,7 +9,7 @@ finishes; dispatcher reads this before firing the reviewer.
 - mode: <mvp | full>
 - new files:
    - modules/<module>/<file>.py
-   - tests/test_<module>_<capability>.py
+   - tests/<the stem `./bin/python -m tools.implement.naming <module> <capability>` prints>.py
 - modified files:
    - modules/<module>/__init__.py    # if re-exports changed
 - capability ids touched: <capability_id>
@@ -21,13 +21,20 @@ finishes; dispatcher reads this before firing the reviewer.
    - behavior tags:        unit=<...> time=<...> idempotent=<...> ordering=<...>
 - pre-handoff checks (run by developer; dispatcher re-runs):
    - archctl validate:           OK / FAIL
-   - import-isolation:           OK / FAIL   # python -m tools.check_imports <module>
+   - import-isolation:           OK / FAIL   # ./bin/python -m tools.check_imports <module>
    - tests passing:              <N> unit, <M> contract-conformance
 - test plan coverage:
    - normal:    YES / NO
    - boundary:  YES / NO
    - invalid:   YES / NO
    - failure:   YES / NO
+- tests by obligation:            # REQUIRED when the contract declares errors
+   - <ERROR_CODE>: <test_method>  #   or behavior.idempotent / behavior.ordering
+                                  # every declared error code gets a line, and the
+                                  # named test must exist in the test file or
+                                  # mark-approved refuses. A capability that
+                                  # declares no errors and no behavior
+                                  # guarantee omits this block entirely.
 - cross-module imports in new code: NONE   # if non-NONE, dispatcher rejects
 - risk notes: <e.g. chose to fail closed on missing upstream capability>
 - upstream state at dispatch: <state of each upstream capability consumed>
@@ -67,7 +74,7 @@ Notes:
 
   - The `cross-module imports in new code: NONE` line is the developer's
     signed declaration. Reviewer MUST verify by running
-    `python -m tools.check_imports <module>` independently. A false
+    `./bin/python -m tools.check_imports <module>` independently. A false
     declaration is grounds for `CHANGES_REQUESTED` with reason `boundary`.
   - If `mode: mvp`, dispatcher records
     `mark-mvp --manifest <path>` after Owner accepts the result; the CLI

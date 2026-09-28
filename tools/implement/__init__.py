@@ -2,8 +2,9 @@
 
 Two CLIs live here:
 
-  `python -m tools.implement.state`   capability state machine (STATE.yaml)
-  `python -m tools.implement.scope`   write-scope audit for one module
+  `./bin/python -m tools.implement.state`   capability state machine (STATE.yaml)
+  `./bin/python -m tools.implement.scope`   write-scope audit for one module
+  `./bin/python -m tools.implement.naming`  the file names one capability's run uses
 
 Submodule names are exposed lazily. Eagerly importing `.state` here would put
 it in `sys.modules` before `-m tools.implement.state` executes it, which makes

@@ -1,0 +1,23 @@
+#!/bin/sh
+# The interpreter this repository's workflow runs on.
+#
+# Every documented command is `./bin/python -m ...` rather than `python -m
+# ...`, for one measured reason: this environment has no `python` on PATH at
+# all, and the shell that runs these commands is neither a login nor an
+# interactive shell, so `conda init` and `conda activate` do not reach it.
+# The developer and reviewer subagents run their commands in exactly that
+# shell, so an interpreter that only exists after activation is an
+# interpreter the workflow cannot rely on.
+#
+# The environment is `robinhood-lp` (Python 3.12). Override without editing
+# this file:  LP2_PYTHON=/path/to/python ./bin/python -m tools.implement.state ...
+#
+# Run from the repository root: `-m` resolves `tools.*` and `framework.*`
+# from the working directory, the same as every other command here.
+LP2_PYTHON="${LP2_PYTHON:-$HOME/miniconda3/envs/robinhood-lp/bin/python}"
+if [ ! -x "$LP2_PYTHON" ]; then
+    echo "bin/python: no interpreter at $LP2_PYTHON" >&2
+    echo "  create the env, or set LP2_PYTHON to a Python 3 with PyYAML" >&2
+    exit 127
+fi
+exec "$LP2_PYTHON" "$@"

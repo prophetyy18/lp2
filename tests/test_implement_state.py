@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tools.implement import naming
 from tools.implement.errors import StateError
 from tools.implement.state import (
     STATE_ROOT,
@@ -143,10 +144,30 @@ class StateCLITests(unittest.TestCase):
         # and a test file, so a capability can legitimately be approved. The
         # checks refuse a capability with an empty tree, so without this
         # every approval test would be testing the refusal instead.
+        #
+        # The contract is here because mark-approved now reads one: the
+        # obligations it enforces come from the architecture, not from the
+        # Card. `alpha.one` declares nothing beyond a signature, so it has no
+        # obligations and these tests keep testing the old rules.
         self.repo = self.root / "repo"
+        (self.repo / "architecture/contracts").mkdir(parents=True)
+        (self.repo / "architecture/contracts/alpha-api.yaml").write_text(
+            "name: alpha-api\n"
+            "version: 1\n"
+            "requires: []\n"
+            "provides:\n"
+            "  - id: alpha.one\n"
+            "    kind: operation\n"
+            "    signature: alpha.one() -> int\n",
+            encoding="utf-8",
+        )
         (self.repo / "architecture/modules/alpha").mkdir(parents=True)
         (self.repo / "architecture/modules/alpha/module.yaml").write_text(
-            "name: alpha\nsource: modules/alpha\n", encoding="utf-8"
+            "name: alpha\n"
+            "source: modules/alpha\n"
+            "provides_contracts:\n"
+            "  - alpha-api\n",
+            encoding="utf-8",
         )
         (self.repo / "modules/alpha").mkdir(parents=True)
         (self.repo / "modules/alpha/thing.py").write_text(
@@ -215,6 +236,7 @@ class StateCLITests(unittest.TestCase):
         verdict: str = "APPROVED",
         reasons: str | None = None,
         scores: tuple[str, ...] = ("OK", "OK", "OK", "OK"),
+        ran: str | None = "3 passed, 0 skipped",
     ) -> Path:
         """Write a Review Record that the state CLI will accept."""
         target = self.root / module / f"{cap}.review.md"
@@ -222,6 +244,7 @@ class StateCLITests(unittest.TestCase):
         reason_line = (
             f"- reason codes: [{reasons}]\n" if reasons is not None else ""
         )
+        ran_line = "" if ran is None else f"- tests run: {ran}\n"
         target.write_text(
             f"# review: {module} / {cap}\n"
             f"   contract_conformance: {scores[0]}\n"
@@ -229,7 +252,8 @@ class StateCLITests(unittest.TestCase):
             f"   test_coverage: {scores[2]}\n"
             f"   implementation_quality: {scores[3]}\n"
             f"{reason_line}"
-            f"- verdict: {verdict}\n",
+            f"- verdict: {verdict}\n"
+            f"{ran_line}",
             encoding="utf-8",
         )
         _set_mtime(target, MANIFEST_MTIME + 60)
@@ -332,16 +356,7 @@ class StateCLITests(unittest.TestCase):
 
     def test_mark_approved_works_from_pending(self) -> None:
         self._seed("alpha", "alpha.one", mode="full")
-        review = self.root / "alpha" / "alpha.one.review.md"
-        review.write_text(
-            "# review: alpha / alpha.one\n"
-            "   contract_conformance: OK\n"
-            "   boundary: OK\n"
-            "   test_coverage: OK\n"
-            "   implementation_quality: OK\n"
-            "- verdict: APPROVED\n",
-            encoding="utf-8",
-        )
+        review = self._review("alpha", "alpha.one")
         mf = self._full_manifest("alpha", "alpha.one")
         rc, out = self._run(
             "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
@@ -885,6 +900,317 @@ class ModuleStateAggregationTests(unittest.TestCase):
             for b in VALID_STATES:
                 label = self._state(a, b)
                 self.assertIn(label, {m.value for m in ModuleState})
+
+
+class TestObligationGateTests(unittest.TestCase):
+    """`fully_approved` is the consumable state, so it reads the contract.
+
+    `alpha.flagged` declares two error codes and two behavior guarantees in
+    `architecture/contracts/alpha-api.yaml`. The gate requires the Manifest
+    to map each to a test method that exists in the test file, and requires
+    the Review Record to say how many tests the reviewer actually ran.
+
+    The failure this exists for is concrete rather than theoretical: the MVP
+    discovery template's own worked example is "3 of the 4 declared error
+    codes are unimplemented", and the full path — the only one another
+    module may consume — did nothing about it.
+    """
+
+    CAP = "alpha.flagged"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        import tools.implement.state as st
+
+        self.repo = self.root / "repo"
+        (self.repo / "architecture/contracts").mkdir(parents=True)
+        (self.repo / "architecture/contracts/alpha-api.yaml").write_text(
+            "name: alpha-api\n"
+            "version: 1\n"
+            "requires: []\n"
+            "provides:\n"
+            "  - id: alpha.flagged\n"
+            "    kind: operation\n"
+            "    signature: alpha.flagged() -> int\n"
+            "    errors:\n"
+            "      - { code: ALPHA_TRANSIENT, recoverable: transient }\n"
+            "      - { code: ALPHA_BAD_INPUT, recoverable: user_input }\n"
+            "    behavior:\n"
+            "      unit: decimal\n"
+            "      time: event_time\n"
+            "      idempotent: true\n"
+            "      ordering: total\n",
+            encoding="utf-8",
+        )
+        (self.repo / "architecture/modules/alpha").mkdir(parents=True)
+        (self.repo / "architecture/modules/alpha/module.yaml").write_text(
+            "name: alpha\n"
+            "source: modules/alpha\n"
+            "provides_contracts:\n"
+            "  - alpha-api\n",
+            encoding="utf-8",
+        )
+        (self.repo / "modules/alpha").mkdir(parents=True)
+        (self.repo / "modules/alpha/thing.py").write_text("x = 1\n", encoding="utf-8")
+        self._old_state_root, self._old_repo_root = st.STATE_ROOT, st.REPO_ROOT
+        st.STATE_ROOT, st.REPO_ROOT = self.root, self.repo
+
+    def tearDown(self) -> None:
+        import tools.implement.state as st
+
+        st.STATE_ROOT, st.REPO_ROOT = self._old_state_root, self._old_repo_root
+        self._tmp.cleanup()
+
+    # --- fixtures ----------------------------------------------------------
+
+    def _tests(self, methods: dict[str, str] | None = None) -> Path:
+        """The capability's test file, holding `methods` (name -> body)."""
+        body = methods if methods is not None else {
+            "test_transient": "pass",
+            "test_bad_input": "pass",
+            "test_is_idempotent": "pass",
+            "test_is_totally_ordered": "pass",
+        }
+        target = self.repo / naming.test_rel_path("alpha", self.CAP)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        src = "import unittest\n\n\nclass T(unittest.TestCase):\n"
+        for name in body:
+            src += f"    def {name}(self) -> None:\n        {body[name]}\n\n"
+        target.write_text(src, encoding="utf-8")
+        return target
+
+    def _manifest(self, block: str | None = None) -> Path:
+        target = self.root / "alpha" / f"{self.CAP}.manifest.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        section = "" if block is None else f"\n{block}\n"
+        target.write_text(
+            f"# manifest: alpha / {self.CAP}\n\n- mode: full{section}",
+            encoding="utf-8",
+        )
+        _set_mtime(target, MANIFEST_MTIME)
+        return target
+
+    def _review(self, ran: str = "4 passed, 0 skipped") -> Path:
+        target = self.root / "alpha" / f"{self.CAP}.review.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            f"# review: alpha / {self.CAP}\n"
+            f"   contract_conformance: OK\n"
+            f"   boundary: OK\n"
+            f"   test_coverage: OK\n"
+            f"   implementation_quality: OK\n"
+            f"- verdict: APPROVED\n"
+            f"- tests run: {ran}\n",
+            encoding="utf-8",
+        )
+        _set_mtime(target, MANIFEST_MTIME + 60)
+        return target
+
+    def _approve(self, block: str | None = None, ran: str = "4 passed, 0 skipped"):
+        from tools.implement.state import CapabilityRecord, load_state, save_state
+
+        rec = load_state("alpha", self.root)
+        rec.capabilities[self.CAP] = CapabilityRecord(state="pending", mode="full")
+        save_state(rec, self.root)
+        self._tests()
+        manifest = self._manifest(block)
+        review = self._review(ran)
+        return self._run(
+            "--root", str(self.root), "mark-approved", "alpha", self.CAP,
+            "--manifest", str(manifest), "--review", str(review),
+        )
+
+    def _run(self, *argv: str) -> tuple[int, str]:
+        from tools.implement import state
+
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(buf):
+                rc = state.main(list(argv))
+        except SystemExit as exc:
+            rc = int(exc.code or 0)
+        return rc, buf.getvalue()
+
+    FULL_BLOCK = (
+        "- tests by obligation:\n"
+        "   - ALPHA_TRANSIENT: test_transient\n"
+        "   - ALPHA_BAD_INPUT: test_bad_input\n"
+        "   - idempotent: test_is_idempotent\n"
+        "   - ordering: test_is_totally_ordered"
+    )
+
+    # --- the rules ---------------------------------------------------------
+
+    def test_a_fully_mapped_capability_is_approved(self) -> None:
+        rc, out = self._approve(self.FULL_BLOCK)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("fully_approved", out)
+
+    def test_a_missing_block_is_refused(self) -> None:
+        rc, out = self._approve(None)
+        self.assertEqual(rc, 1)
+        self.assertIn("tests by obligation", out)
+
+    def test_an_untested_error_code_is_refused(self) -> None:
+        """The rule's whole reason for existing."""
+        rc, out = self._approve(
+            "- tests by obligation:\n"
+            "   - ALPHA_TRANSIENT: test_transient\n"
+            "   - idempotent: test_is_idempotent\n"
+            "   - ordering: test_is_totally_ordered"
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("ALPHA_BAD_INPUT", out)
+
+    def test_a_claim_naming_a_test_that_is_not_there_is_refused(self) -> None:
+        """A mapping the developer wrote but did not honour.
+
+        This is the failure a count cannot see, and the one an agent under
+        pressure to reach a gate produces: a Manifest that looks complete
+        because the mapping is complete, over a test file where the named
+        method does not exist. The obligation itself is declared, so only
+        reading the test file catches it.
+        """
+        rc, out = self._approve(
+            "- tests by obligation:\n"
+            "   - ALPHA_TRANSIENT: test_transient\n"
+            "   - ALPHA_BAD_INPUT: test_never_written\n"
+            "   - idempotent: test_is_idempotent\n"
+            "   - ordering: test_is_totally_ordered"
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("ALPHA_BAD_INPUT", out)
+        self.assertIn("test_never_written", out)
+
+    def test_an_obligation_the_contract_does_not_declare_is_refused(self) -> None:
+        """Catches a typo in the Manifest, which would otherwise pass silently."""
+        rc, out = self._approve(
+            "- tests by obligation:\n"
+            "   - ALPHA_TRANSIENT: test_transient\n"
+            "   - ALPHA_BAD_INPUT: test_bad_input\n"
+            "   - idempotent: test_is_idempotent\n"
+            "   - ordering: test_is_totally_ordered\n"
+            "   - idemoptent: test_is_idempotent"
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("idemoptent", out)
+
+    def test_a_claim_whose_test_file_is_absent_is_refused(self) -> None:
+        """The module has tests; this capability does not.
+
+        `_require_work_exists` only asks whether the *module* has a test
+        file, so a Manifest that maps every obligation can otherwise point at
+        a file that was never written. This is the gap that leaves the gate
+        at module granularity for tests while everything else is at
+        capability granularity.
+        """
+        from tools.implement.state import CapabilityRecord, load_state, save_state
+
+        rec = load_state("alpha", self.root)
+        rec.capabilities[self.CAP] = CapabilityRecord(state="pending", mode="full")
+        save_state(rec, self.root)
+        (self.repo / "tests").mkdir(parents=True, exist_ok=True)
+        (self.repo / "tests/test_alpha_something_else.py").write_text(
+            "import unittest\n", encoding="utf-8"
+        )
+        manifest = self._manifest(self.FULL_BLOCK)
+        review = self._review()
+        rc, out = self._run(
+            "--root", str(self.root), "mark-approved", "alpha", self.CAP,
+            "--manifest", str(manifest), "--review", str(review),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("does not exist", out)
+
+    def test_a_review_without_a_test_run_is_refused(self) -> None:
+        rc, out = self._approve(self.FULL_BLOCK, ran="")
+        self.assertEqual(rc, 1)
+        self.assertIn("tests run", out)
+
+    def test_a_review_reporting_zero_tests_is_refused(self) -> None:
+        rc, out = self._approve(self.FULL_BLOCK, ran="0 passed, 0 skipped")
+        self.assertEqual(rc, 1)
+        self.assertIn("0 tests passed", out)
+
+    def test_a_review_reporting_a_skip_is_refused(self) -> None:
+        """A passing run with one skip is still a coverage hole.
+
+        Four skipped tests would have passed every other check in this CLI:
+        the file exists, the scores are OK, and unittest exits 0.
+        """
+        rc, out = self._approve(self.FULL_BLOCK, ran="3 passed, 1 skipped")
+        self.assertEqual(rc, 1)
+        self.assertIn("skipped", out)
+
+    def test_the_obligation_list_comes_from_the_contract_not_the_manifest(self) -> None:
+        """Remove a guarantee from the contract and it stops being demanded."""
+        from tools.implement.state import _test_obligations
+
+        path = self.repo / "architecture/contracts/alpha-api.yaml"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("idempotent: true", ""),
+            encoding="utf-8",
+        )
+        from framework.architecture import load as load_arch
+
+        cap = _capability_from_yaml(load_arch(self.repo), self.CAP)
+        self.assertNotIn("idempotent", _test_obligations(cap))
+        self.assertIn("ALPHA_TRANSIENT", _test_obligations(cap))
+
+    def test_a_capability_declaring_nothing_is_not_demanded_a_block(self) -> None:
+        """The check is vacuous for a base capability, not absent from it."""
+        from tools.implement.state import _test_obligations
+
+        from framework.architecture import load as load_arch
+
+        path = self.repo / "architecture/contracts/alpha-api.yaml"
+        path.write_text(
+            "name: alpha-api\nversion: 1\nrequires: []\nprovides:\n"
+            "  - id: alpha.bare\n    kind: operation\n",
+            encoding="utf-8",
+        )
+        cap = _capability_from_yaml(load_arch(self.repo), "alpha.bare")
+        self.assertEqual(_test_obligations(cap), {})
+
+    def test_mark_changes_does_not_demand_them(self) -> None:
+        """A rejection may be *because* a guarantee is untested.
+
+        Demanding the mapping on the way down would refuse to record the
+        reviewer's finding — the one case where the work is known to be
+        short and the run is exactly where it should stop.
+        """
+        from tools.implement.state import CapabilityRecord, load_state, save_state
+
+        rec = load_state("alpha", self.root)
+        rec.capabilities[self.CAP] = CapabilityRecord(state="pending", mode="full")
+        save_state(rec, self.root)
+        self._tests()
+        manifest = self._manifest(None)  # no obligations block
+        review = self._review()
+        review.write_text(
+            review.read_text(encoding="utf-8")
+            .replace("verdict: APPROVED", "verdict: CHANGES_REQUESTED")
+            .replace("- tests run: 4 passed, 0 skipped\n", ""),
+            encoding="utf-8",
+        )
+        rc, out = self._run(
+            "--root", str(self.root), "mark-changes", "alpha", self.CAP,
+            "--manifest", str(manifest), "--review", str(review),
+        )
+        self.assertEqual(rc, 1)  # no reason codes, as it happens
+        self.assertNotIn("tests by obligation", out)
+
+
+def _capability_from_yaml(arch, capability: str):
+    for contract in arch.contracts.values():
+        for cap in contract.provides:
+            if cap.id == capability:
+                return cap
+    raise AssertionError(f"{capability} not in the fixture architecture")
 
 
 class CrossModuleGateTests(unittest.TestCase):

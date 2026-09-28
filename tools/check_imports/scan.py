@@ -415,7 +415,7 @@ def scan_repo(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python -m tools.check_imports")
+    p = argparse.ArgumentParser(prog="./bin/python -m tools.check_imports")
     p.add_argument("module", nargs="?", help="module name to scan (default: scan every module)")
     p.add_argument("--modules-root", default="modules", help="root of modules/ tree")
     p.add_argument(

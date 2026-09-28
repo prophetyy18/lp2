@@ -10,10 +10,11 @@ after auditing developer's diff + manifest + Capability Card.
 - reviewed: <ISO timestamp>
 - scores (4 项,每项 OK / ISSUE):
    contract_conformance: <OK | ISSUE>   # contract and Card match; no undeclared public behavior
-   boundary:             <OK | ISSUE>   # python -m tools.check_imports <module> clean
+   boundary:             <OK | ISSUE>   # ./bin/python -m tools.check_imports <module> clean
    test_coverage:        <OK | ISSUE>   # normal / boundary / invalid / failure paths covered
    implementation_quality: <OK | ISSUE> # errors, bounded I/O, cleanup, readable code, useful types
 - verdict: <APPROVED | CHANGES_REQUESTED | ABANDON>
+- tests run: <N> passed, <M> skipped   # what YOU ran, not what the developer claimed
 - reason codes: [<signature | schema | behavior | boundary | test | scope | quality>]
 - notes (≤ 2 lines per ISSUE):
    - <issue>: <one-line explanation>
@@ -41,5 +42,5 @@ Notes:
     reviewed is an ordinary Owner decision and takes a plain `abandon`.
   - `boundary: ISSUE` is special: a real cross-module import is a hard
     rule break, not a stylistic call. Reject unconditionally.
-  - Reviewer MUST run `python -m tools.check_imports <module>` itself;
+  - Reviewer MUST run `./bin/python -m tools.check_imports <module>` itself;
     do not trust the developer's `cross-module imports: NONE` line.

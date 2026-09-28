@@ -52,7 +52,7 @@ You MUST NOT read:
     Card the Owner approved. Build from the Card.
 
 The exact allow-list is the answer to
-`python -m framework.architecture.cli readable <your-module>`. If your
+`./bin/python -m framework.architecture.cli readable <your-module>`. If your
 Card needs a capability your `depends_on` does not cover, you do not go
 and read the upstream: you write a Design Blocker (`CONTRACT_INSUFFICIENT`)
 and stop.
@@ -73,12 +73,22 @@ If you need something outside your scope, stop and ask the dispatcher.
   - Code under `modules/<your-module>/`:
     - one or more `.py` files implementing the capability
     - each file uses integers / controlled vocabularies per the framework's contract fields
-  - Tests under `tests/`:
-    - `tests/test_<module>_<capability>.py` covering normal, boundary, invalid, failure paths
+  - Tests under `tests/`: one file per capability, named by the rule in
+    `tools/implement/naming.py` — hyphens and dots both become underscores,
+    so `market-data` / `series.get` is `tests/test_market_data_series_get.py`.
+    Do not spell the name out from memory; run
+    `./bin/python -m tools.implement.naming <module> <capability>`, which prints the
+    file and the exact command to run it. Cover normal, boundary, invalid and
+    failure paths.
   - Implementation Manifest at `docs/implement/<your-module>/<capability>.manifest.md`
     (use the template). In `mvp` mode it MUST contain the `## discovery`
     section — question / answer / surprised / keep / discard / known_gaps —
-    or `mark-mvp` will reject it.
+    or `mark-mvp` will reject it. In `full` mode it MUST contain a
+    `tests by obligation:` block mapping every error code the contract
+    declares for this capability, plus `idempotent` / `ordering` if the
+    contract declares those, to a test method that exists in your test file.
+    `mark-approved` reads the list of obligations from the contract, not from
+    your Card, and checks each one is claimed and the named test is there.
   - Only when blocked by the approved design: a Design Blocker at
     `docs/implement/<your-module>/<capability>.design-blocker.md`
 
@@ -137,17 +147,25 @@ wrong to you, that is a Design Blocker, not a licence to reinterpret it.
 
 ## Pre-handoff checks (you run these yourself)
 
-  1. `python -m framework.architecture.cli validate` → OK
-  2. `python -m tools.check_imports <your-module>` → no ERROR findings
-  3. `python -m unittest tests.test_<your-module>_<your-capability>.py -v`
+  1. `./bin/python -m framework.architecture.cli validate` → OK
+  2. `./bin/python -m tools.check_imports <your-module>` → no ERROR findings
+  3. `./bin/python -m unittest tests.test_<stem> -v`, where `<stem>` is the file
+     stem `./bin/python -m tools.implement.naming <module> <capability>` prints —
+     no `.py` suffix, and dots turned into underscores, because unittest
+     resolves that argument as a module name, not a file path.
      → all pass (this repo uses unittest; there is no pytest installed)
   4. Your Implementation Manifest is filled in with concrete file paths,
-     contract-conformance checkboxes, and a test count.
+     contract-conformance checkboxes, a test count, and — in full mode — a
+     `tests by obligation:` block covering every error code and behavior
+     guarantee the contract declares for this capability. A declared error
+     code with no test is the promise you make to whichever module consumes
+     this one, broken before anyone notices.
 
 Write only inside `modules/<your-module>/`, `docs/implement/<your-module>/`,
-and `tests/test_<your-module>_<your-capability>*.py`. The dispatcher audits
-this after you return, with
-`python -m tools.implement.scope <module> --capability <cap> --base <commit>`.
+and your own capability's test file under `tests/` (the same
+`tools.implement.naming` stem as above, plus any `_*` helpers beside it). The
+dispatcher audits this after you return, with
+`./bin/python -m tools.implement.scope <module> --capability <cap> --base <commit>`.
 A write anywhere else is a hard stop, not a style note.
 
 If any check fails, fix the code before returning.

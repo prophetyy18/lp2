@@ -13,7 +13,108 @@ Additional request:
 - [x] Document how to resume interrupted developer, reviewer, and Owner gates without adding a new state; provide `retry` for a rejected capability.
 - [x] Add a persistent design blocker report and routing for contract or Card defects discovered during development or review.
 
+- [x] The write-scope audit could not be used on a dirty tree, and the
+      first real run proved it. `touched_files` merged `git diff <base>`
+      with `git ls-files --others`, so **every untracked file in the
+      repository** was attributed to the run. Dispatching the first
+      developer on a tree carrying this session's own uncommitted work
+      produced 19 violations, all of them the dispatcher's edits, and
+      reported the developer as having escaped its write set. The
+      developer's own files were never among them — the audit was right
+      about the run and unusable as a gate at the same time. The two
+      sources are now reported separately, and each finding says whether
+      it came from a tracked modification (which really is anchored to
+      `--base`) or from an untracked file (which is not, and is annotated
+      as such). The premise itself is the dispatcher's to guarantee, so
+      the protocol now says: commit in-flight work before spawning a
+      writing role. Deliberately *not* solved by downgrading untracked
+      findings to a warning — a developer that wrote outside its tree and
+      left the file uncommitted would then pass, which is a worse failure
+      than a false positive because it is silent.
+- [x] The Card gate had no prompt. The workflow said "after Owner approves
+      the Card" without saying how Owner got to see it, and the Card gate
+      was the only gate absent from `DECISION_PROMPT.template.md` — the
+      only one where Owner decides *before* spending anything, and so the
+      one most worth doing properly. Owner also had no way to see it:
+      asked, the honest answer was "go read `docs/implement/<module>/
+      <cap>.card.md`", which is a 60-line English document with 30+
+      fields. It now has a form (Chinese, since the Owner reads the
+      prompts while the agents read the role files), it shows the Card's
+      test **plan** rather than tests — nothing is written yet, and a plan
+      is far cheaper to judge than finished tests — and it carries a
+      `没定的事` list of what the Card refused to decide, which is where
+      the Owner's real judgement is. `AGENTS.md`'s claim that the Card is
+      "~10 lines" was simply false and is gone.
+
 Review of 2026-09-28 (P0 items that blocked module execution):
+
+- [x] No module had ever been run, and the naming rule could not have worked.
+      Module names are hyphenated and every capability id is dotted
+      (`market-data`, `series.get`), so neither survives as a Python module
+      path, and the test-file convention was spelled in prose in seven places
+      and implemented twice. `scope.py` compared against
+      `tests/test_market-data_series.get` — a filename no writer can produce,
+      so a developer's own test file came back `SCOPE_VIOLATION`. That is the
+      layer AGENTS.md calls "the layer that actually holds", so the first real
+      capability would have been stopped by it. `state.py` meanwhile asked a
+      different question (`test_market_data*`), and the two documented
+      `python -m unittest tests.test_<module>_<cap>.py` invocations cannot work
+      for any real module: unittest resolves its argument as a module name, so
+      the `.py` suffix fails, a hyphen is not an identifier character, and the
+      capability's dot is read as attribute access. The translation now lives
+      once in `tools/implement/naming.py`; both CLIs call it and
+      `python -m tools.implement.naming <module> <cap>` prints the answer, so
+      the prompts can ask instead of composing a name. It survived review
+      because every fixture used `alpha` / `one` — the one pair of names for
+      which the broken rule is accidentally correct; the new tests are written
+      against hyphenated and dotted names, and one of them executes the
+      command the CLI prints, because a naming rule nothing ever imports can
+      drift back into prose unnoticed.
+- [x] The consumable state was gated on documents only. `fully_approved` is
+      the one state another module may build on, and nothing read the
+      contract to ask what a consumer is entitled to assume — even though
+      `position.mark` declares three error codes and `idempotent: true` and
+      `ordering: total` in `architecture/contracts/pricing-api.yaml`, all of
+      it already parsed into `Capability.errors` / `.behavior`. A capability
+      could be approved with none of it tested, and the Manifest's
+      `errors emitted:` line — which nobody read — was free to say otherwise.
+      The MVP path had already learned this; the discovery template's own
+      worked example is "3 of the 4 declared error codes are unimplemented".
+      `mark-approved` now derives the obligations from the contract, not the
+      Card, and requires a `tests by obligation:` block mapping each one to a
+      test method that exists in the test file. Deliberately a *mapping*
+      rather than a count, and deliberately not a string search for the error
+      code: a developer who parametrizes over `cap.errors` has written a
+      better test than one who pastes the literal, and refusing that would
+      train the worse habit. `mark-changes` does not demand them — a
+      rejection may be *because* a guarantee is untested, and refusing to
+      record the reviewer's finding would be absurd. Twelve tests, and each
+      rule was checked to fail when the rule was removed.
+- [x] `test_coverage: OK` was a claim about tests nobody was required to run.
+      The reviewer was made to run `check_imports` and never the test file it
+      was scoring, so a skipped test still left the file on disk, still read
+      as coverage, and still exited 0 — four skipped tests passed every other
+      check in the CLI. The Review Record now carries `- tests run: <N>
+      passed, <M> skipped`, which `mark-approved` requires with N ≥ 1 and
+      M == 0, and the dispatcher is told to re-run the tests and compare
+      counts, because the CLI can check the line is present but not that
+      anyone counted correctly. Zero skips is the rule because a skip is
+      unreviewable, and "we cannot exercise this yet" is what `mode: mvp` is
+      for.
+- [x] Every documented command was written `python -m ...`, and no `python`
+      exists on this PATH. The measurement that settled it: the shell
+      running these commands is neither login nor interactive and reads no
+      profile, so `conda init` / `conda activate` never reach it — and the
+      developer and reviewer subagents run their commands in exactly that
+      shell. Activation was therefore not an option. `bin/python` is a shim
+      that execs the `robinhood-lp` env (Python 3.12), and every documented
+      command is now `./bin/python -m ...`; `LP2_PYTHON` overrides it without
+      editing the file, and the shim exits 127 with a message rather than
+      failing obscurely. The env was missing PyYAML — the tooling's only
+      third-party dependency, previously undeclared — so that is installed
+      along with pandas, which the `series.get` signature needs. Three tests
+      cover the shim, including one that runs the command the naming CLI
+      prints.
 
 - [x] Unblock cross-module consumption. `depends_on` was declared on 14 of 16
   modules but `check_imports` denied the only import that could satisfy it,

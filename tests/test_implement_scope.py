@@ -13,6 +13,7 @@ from pathlib import Path
 
 from framework.architecture import loader
 from framework.architecture.tests.fixtures import write_tree
+from tools.implement import naming
 from tools.implement.scope import allowed_roots, audit
 
 CONTRACTS = {
@@ -21,6 +22,12 @@ CONTRACTS = {
         "version": 1,
         "requires": [],
         "provides": [{"id": "alpha.one"}],
+    },
+    "market-data-api": {
+        "name": "market-data-api",
+        "version": 1,
+        "requires": [],
+        "provides": [{"id": "series.get"}],
     },
 }
 
@@ -37,6 +44,16 @@ MODULES = {
         "provides_contracts": [],
         "depends_on": [{"contract": "alpha-api", "uses": ["alpha.one"]}],
         "readable_extra": ["modules/alpha/api/**"],
+    },
+    # Every real module is hyphenated and every real capability id is
+    # dotted. `alpha` / `one` are the only names in this repository for which
+    # a naive `test_{module}_{capability}` prefix is correct, which is
+    # exactly why the audit shipped a prefix no writer could ever satisfy.
+    "market-data": {
+        "name": "market-data",
+        "source": "modules/market-data",
+        "provides_contracts": ["market-data-api"],
+        "depends_on": [],
     },
 }
 
@@ -122,6 +139,67 @@ class ScopeAuditTests(unittest.TestCase):
     def test_tests_root_is_absent_without_a_capability(self) -> None:
         roots = dict(allowed_roots("alpha", None, self.arch))
         self.assertNotIn("tests/", " ".join(roots))
+
+
+class HyphenatedModuleDottedCapabilityTests(unittest.TestCase):
+    """The naming rule against names that actually occur.
+
+    Every module in `architecture/modules/` is hyphenated and every
+    capability id in `architecture/contracts/` is dotted, so the audit's
+    test allow-list has to translate both. It did not: it compared against
+    `tests/test_market-data_series.get`, a filename no writer produces, and
+    a developer's own test came back a SCOPE_VIOLATION — the layer AGENTS.md
+    calls "the layer that actually holds" was the one thing guaranteed to
+    stop the first real run.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        write_tree(self.repo, CONTRACTS, MODULES)
+        (self.repo / "docs" / "implement").mkdir(parents=True, exist_ok=True)
+        (self.repo / "tests").mkdir(parents=True, exist_ok=True)
+        _git(self.repo, "init", "-q")
+        _git(self.repo, "config", "user.email", "test@example.com")
+        _git(self.repo, "config", "user.name", "test")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-qm", "baseline")
+        self.arch = loader.load(self.repo)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write(self, rel: str) -> None:
+        target = self.repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# new\n", encoding="utf-8")
+
+    def test_the_canonical_test_file_is_inside_the_grant(self) -> None:
+        self._write(naming.test_rel_path("market-data", "series.get"))
+        findings = audit("market-data", "series.get", repo=self.repo, arch=self.arch)
+        self.assertEqual([f.format() for f in findings], [])
+
+    def test_the_allow_list_uses_underscores_not_the_raw_names(self) -> None:
+        roots = dict(allowed_roots("market-data", "series.get", self.arch))
+        self.assertIn("tests/test_market_data_series_get", roots)
+        for raw in ("market-data", "series.get", "test_market-data", "series_get"):
+            self.assertNotIn(f"tests/test_{raw}", roots)
+
+    def test_sibling_helpers_beside_the_test_are_allowed(self) -> None:
+        self._write(naming.test_rel_path("market-data", "series.get"))
+        self._write("tests/test_market_data_series_get_fixtures.py")
+        findings = audit("market-data", "series.get", repo=self.repo, arch=self.arch)
+        self.assertEqual([f.format() for f in findings], [])
+
+    def test_another_capabilitys_test_is_still_outside_the_grant(self) -> None:
+        self._write(naming.test_rel_path("market-data", "series.symbols"))
+        findings = audit("market-data", "series.get", repo=self.repo, arch=self.arch)
+        self.assertEqual({f.code for f in findings}, {"SCOPE_VIOLATION"})
+
+    def test_another_modules_test_is_outside_the_grant(self) -> None:
+        self._write(naming.test_rel_path("alpha", "alpha.one"))
+        findings = audit("market-data", "series.get", repo=self.repo, arch=self.arch)
+        self.assertEqual({f.code for f in findings}, {"SCOPE_VIOLATION"})
 
 
 if __name__ == "__main__":

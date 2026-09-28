@@ -29,7 +29,9 @@ You MAY read only:
   - the Capability Card at `docs/implement/<module>/<capability>.card.md`
   - the Implementation Manifest at `docs/implement/<module>/<capability>.manifest.md`
   - `modules/<module>/**` (the implementation under review)
-  - `tests/test_<module>_<capability>.py` (the developer's tests)
+  - the capability's test file under `tests/` — the stem
+    `./bin/python -m tools.implement.naming <module> <capability>` prints
+    (hyphens and dots both become underscores)
   - `framework/architecture/__init__.py` (public API only)
   - `docs/implement/templates/DESIGN_BLOCKER.template.md` (only for a design blocker)
   - `docs/implement/templates/REVIEW_RECORD.template.md` (Review Record format)
@@ -65,11 +67,20 @@ following `templates/REVIEW_RECORD.template.md`. The record MUST contain:
        module appears in `<module>`'s `depends_on` and the path falls under
        that upstream's granted public surface (`modules/<upstream>/api/**`).
        The developer's claim "import-isolation: OK" must be verified by
-       running `python -m tools.check_imports <module>` yourself. If any
+       running `./bin/python -m tools.check_imports <module>` yourself. If any
        ERROR finding is present, this score is `ISSUE`.
-    3. `test_coverage` — normal / boundary / invalid / failure paths are
-       all present. Tests assert observable behavior, not implementation
-       internals.
+    3. `test_coverage` — **you must run them.** Execute the capability's
+       test file yourself with the command
+       `./bin/python -m tools.implement.naming <module> <capability>` prints, and
+       record the result verbatim as `- tests run: <N> passed, <M> skipped`.
+       Reading the tests tells you which cases exist; running them is the
+       only thing that tells you they load, assert, and pass. `mark-approved`
+       refuses a Record without that line, refuses `0 passed`, and refuses a
+       non-zero skip count — a skip asserts nothing, so it is not coverage.
+       Then check that normal / boundary / invalid / failure paths are all
+       present, that each error code the contract declares is covered by the
+       test the Manifest's `tests by obligation:` block names, and that the
+       tests assert observable behavior rather than implementation internals.
     4. `implementation_quality` — error handling is explicit; timeouts and
        retries are bounded where relevant; resources are released; code is
        readable and has useful types. A material defect is `ISSUE`; do not
@@ -92,6 +103,11 @@ not a `CHANGES_REQUESTED` verdict.
     whether the implementation is acceptable.
   - Do NOT modify any code or test file. Your only writes are the Review Record
     or, when design blocks review, the Design Blocker.
+  - You MUST run the capability's tests, not only read them, and record the
+    count you got. Do not take the developer's word, and do not take the
+    Manifest's `tests passing:` line: both are written by the party you are
+    auditing. If they disagree with what you ran, that disagreement is an
+    `ISSUE`, not a footnote.
   - Do NOT consult other Review Records. Reason from the contract + manifest + diff.
   - If resuming after interruption, review the full current implementation
     again and replace only your own incomplete Review Record. A partial

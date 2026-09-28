@@ -32,7 +32,7 @@ For each capability about to be dispatched:
 1. **Upstream gate.** Run
 
    ```bash
-   python -m tools.implement.state upstream <module> [<capability>] [--upstream <cap.id>]
+   ./bin/python -m tools.implement.state upstream <module> [<capability>] [--upstream <cap.id>]
    ```
 
    It reads the module's declared `depends_on[].uses` from
@@ -55,15 +55,27 @@ For each capability about to be dispatched:
    by an unrelated sibling's upstream.
 
    To see who a capability blocks, use
-   `python -m tools.implement.state dependers-of <capability>`, which names
+   `./bin/python -m tools.implement.state dependers-of <capability>`, which names
    the provider and every module whose `module.yaml` declares it.
 
-2. **Capability Card is current.** Check `docs/implement/<module>/<cap>.card.md`
-   exists; if not, route to module-designer first.
+2. **Capability Card is current, and Owner has read it.** Check
+   `docs/implement/<module>/<cap>.card.md` exists; if not, route to
+   module-designer first. Then **run the Card gate**: present the Card to
+   Owner in the form `docs/implement/templates/DECISION_PROMPT.template.md`
+   gives, and wait for `go` / `redo` / `abandon`. Do not paste the Card —
+   it is 30+ fields and nobody reads it. Owner decides `mode` here, and this
+   is the only place.
 
-3. **Mode is set on the record.** After Owner approves the Card, run
-   `python -m tools.implement.state register <module> <cap> --mode <mvp|full>`.
-   Use the mode approved on the Card. Then `show <module> <cap>` must show
+   This step used to be missing entirely: the workflow said "after Owner
+   approves the Card" without saying how Owner got to see it, and the
+   Card gate was the one gate with no prompt template. It is also the only
+   gate where Owner is asked to decide before spending anything, which is
+   exactly why it is worth doing properly.
+
+3. **Mode is set on the record.** Only after Owner answered `go` at the Card
+   gate, run
+   `./bin/python -m tools.implement.state register <module> <cap> --mode <mvp|full>`.
+   Use the mode Owner chose. Then `show <module> <cap>` must show
    `state: pending` and the selected mode. If already registered, inspect
    the existing record; do not reset it.
 
@@ -72,14 +84,29 @@ If any check fails, surface to Owner with a one-line prompt; do NOT spawn.
 ## What you must do after developer reports done
 
   - Read the Implementation Manifest.
-  - Run `python -m framework.architecture.cli validate`.
-  - Run `python -m tools.check_imports <module>`.
-  - Run `python -m tools.implement.scope <module> --capability <cap>
+  - Run `./bin/python -m framework.architecture.cli validate`.
+  - Run `./bin/python -m tools.check_imports <module>`.
+  - Run `./bin/python -m tools.implement.scope <module> --capability <cap>
     --base <commit recorded before the spawn>`. A `SCOPE_VIOLATION` means
     the developer wrote outside its own tree: stop, do not spawn reviewer,
     and surface it to Owner.
-  - Run `python -m unittest tests.test_<module>_<cap>.py -v`
-    (this repo uses unittest; there is no pytest installed).
+
+    **The tree must be clean when you spawn a writing role.** A tracked
+    file that differs from `--base` really was touched after that commit,
+    so a finding on one is sound. An *untracked* file has no such anchor:
+    git cannot say when it appeared, so the audit attributes every
+    untracked file in the repository to the run, whether this run created
+    it or it predates the spawn. Commit your own in-flight work first.
+    Measured on the first end-to-end run: 19 violations, all of them the
+    dispatcher's own uncommitted edits, zero the developer's — the audit
+    was simultaneously right about the developer and unusable as a gate.
+    Each finding says which kind it is, so read that before escalating.
+  - Run the developer's tests:
+    `./bin/python -m unittest tests.<stem> -v`, where `<stem>` is what
+    `./bin/python -m tools.implement.naming <module> <cap>` prints. Note the
+    argument is a module name: no `.py` suffix, and the module's hyphens and
+    the capability's dots are underscores. This repo uses unittest; there is
+    no pytest installed.
   - If mode=`full` and checks pass: immediately spawn reviewer (model
     `opus`) with the developer diff + manifest + card.
   - If mode=`mvp`: skip reviewer. Go directly to the Owner prompt.
@@ -92,8 +119,15 @@ every uncommitted change in the tree as if this run had made it.
 
   - Read the Review Record and show the Owner its verdict and scores.
     Do not change STATE before the Owner decides.
+  - **Cross-check the counts.** Re-run the developer's tests yourself and
+    compare against the Record's `tests run: <N> passed, <M> skipped`. The
+    reviewer ran them too; if your number and the reviewer's differ, the
+    tree moved after the review, and the fix is to re-dispatch reviewer, not
+    to prefer one number over the other. `mark-approved` cannot make this
+    comparison for you — it checks the line is present and that nothing was
+    skipped, not that anyone counted correctly.
   - On Owner approval of an `APPROVED` verdict, call
-    `python -m tools.implement.state mark-approved <module> <cap>
+    `./bin/python -m tools.implement.state mark-approved <module> <cap>
     --review docs/implement/<module>/<cap>.review.md
     --manifest docs/implement/<module>/<cap>.manifest.md`.
   - On Owner request for changes, call `mark-changes` with the same
@@ -216,7 +250,23 @@ make developer or reviewer silently widen the approved design.
 
 ## The Owner-facing prompt (the only thing Owner sees)
 
-Three normal forms, all ≤ 2 lines:
+Four normal forms. All Owner-facing prompts are in Chinese; the role files
+and repo prose stay English.
+
+### Card gate — before any code exists:
+```
+<module>/<cap>  mode=<full|mvp>
+
+做什么   <signature>
+怎么测   正常 / 边界 / 异常 / 失败, one line each
+没定的事 <what the Card refuses to decide>
+
+[go / redo / abandon]
+```
+Full form and the rules for filling it:
+`docs/implement/templates/DECISION_PROMPT.template.md`. The Owner sees the
+Card's test **plan** here — no test exists yet — and decides `mode`. Never
+paste the Card itself.
 
 ### MVP path:
 ```

@@ -11,6 +11,8 @@ This CLI compares the working tree against the module's allowed write roots:
     modules/<module>/**                  its own implementation (from module.yaml `source`)
     docs/implement/<module>/**           its own cards, manifests, records
     tests/test_<module>_<capability>*.py its own tests, for this capability only
+                                        (hyphens and dots become underscores;
+                                         see tools/implement/naming.py)
 
 Anything else that is modified, added, or staged is a SCOPE_VIOLATION. Note
 what is deliberately NOT allowed: a declared upstream's granted public
@@ -22,7 +24,7 @@ behind, not what it read. It is a backstop on top of the declared read
 scope, not a substitute for it.
 
 Usage:
-    python -m tools.implement.scope <module> [--capability <cap>]
+    ./bin/python -m tools.implement.scope <module> [--capability <cap>]
 """
 
 from __future__ import annotations
@@ -34,6 +36,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from framework.architecture import Architecture, load as load_arch
+
+from tools.implement import naming
 
 SEVERITY_ERROR = "ERROR"
 SEVERITY_INFO = "INFO"
@@ -64,15 +68,26 @@ def _git(repo: Path, *args: str) -> list[str]:
     return [line for line in out.stdout.splitlines() if line.strip()]
 
 
-def touched_files(repo: Path, base: str = "HEAD") -> list[str]:
-    """Paths changed since `base`: tracked edits plus untracked files.
+def touched_files(repo: Path, base: str = "HEAD") -> list[tuple[str, str]]:
+    """(path, how it was touched) for everything changed since `base`.
 
-    `base` is the commit that was HEAD when the subagent was spawned, so the
-    diff measures that run rather than everything uncommitted in the tree.
+    The two sources are kept apart because they are not equally trustworthy.
+    A tracked file that differs from `base` really was modified after that
+    commit, so attributing it to the run is sound. An untracked file has no
+    such anchor: git cannot say when it appeared, so *every* untracked file
+    in the repository is attributed to the run whether this run created it
+    or it predates the spawn. On a tree that was dirty when the developer
+    was dispatched, that is the entire source of false positives — a real
+    one, measured: the first end-to-end run of this audit reported 19
+    violations, all of them the dispatcher's own uncommitted work, and none
+    of them the developer's.
     """
     tracked = _git(repo, "diff", "--name-only", base)
     untracked = _git(repo, "ls-files", "--others", "--exclude-standard")
-    return sorted({p.strip() for p in tracked + untracked if p.strip()})
+    out = [(p.strip(), "modified") for p in tracked if p.strip()]
+    seen = {p for p, _ in out}
+    out += [(p.strip(), "untracked") for p in untracked if p.strip() and p.strip() not in seen]
+    return sorted(out)
 
 
 def allowed_roots(
@@ -91,8 +106,16 @@ def allowed_roots(
         (f"docs/implement/{module}/", "own capability cards and records"),
     ]
     if capability:
+        # Not `tests/test_{module}_{capability}`: module names are hyphenated
+        # and capability ids are dotted, so that string names a file nobody
+        # can write and the developer's own test read as a violation. Both
+        # sides are translated in one place, which is the only reason the
+        # audit and the role prompts can be expected to agree.
         roots.append(
-            (f"tests/test_{module}_{capability}", "own tests for this capability")
+            (
+                naming.test_path_prefix(module, capability),
+                "own tests for this capability",
+            )
         )
     return roots
 
@@ -109,7 +132,7 @@ def audit(
         arch = load_arch(repo)
     roots = allowed_roots(module, capability, arch)
     out: list[ScopeFinding] = []
-    for path in touched_files(repo, base):
+    for path, how in touched_files(repo, base):
         hit = next((why for prefix, why in roots if path.startswith(prefix)), None)
         if hit is None:
             out.append(
@@ -119,10 +142,17 @@ def audit(
                     module=module,
                     path=path,
                     message=(
-                        f"`{module}` may not write `{path}`. Allowed: "
+                        f"`{module}` may not write `{path}` ({how}). Allowed: "
                         + "; ".join(f"{p}" for p, _ in roots)
                         + ". A declared upstream's public surface is readable, "
                         "never writable."
+                        + (
+                            "  NOTE: an untracked file is attributed to this "
+                            "run without evidence — it only holds if the tree "
+                            "was clean when the run was spawned."
+                            if how == "untracked"
+                            else ""
+                        )
                     ),
                 )
             )
@@ -130,7 +160,7 @@ def audit(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python -m tools.implement.scope")
+    p = argparse.ArgumentParser(prog="./bin/python -m tools.implement.scope")
     p.add_argument("module")
     p.add_argument(
         "--capability",

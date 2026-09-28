@@ -90,12 +90,12 @@ Four layers back that up, and they are not equally strong:
      not register per-role subagents, so a subagent runs with the ambient
      tool permissions and this layer cannot be mechanically enforced. It is
      a stated obligation the role is held to, not a wall.
-  2. **Audited write scope (enforced).** `python -m tools.implement.scope
+  2. **Audited write scope (enforced).** `./bin/python -m tools.implement.scope
      <module> --capability <cap> --base <commit>` compares the files the run
      left behind against what that module may write. It is the layer that
      actually holds, because a run that writes outside its own tree is
      visible afterwards even when it was never stopped.
-  3. **AST import scanner.** `python -m tools.check_imports <module>`
+  3. **AST import scanner.** `./bin/python -m tools.check_imports <module>`
      walks every `.py` under `modules/<module>/` and resolves each import to
      a repo path, then asks the framework (`check_read`) whether the
      importing module may read it. Denials are reported as
@@ -126,12 +126,12 @@ readable_extra:
 a grant without a matching `depends_on` is reported as
 `CONTRACT_INSUFFICIENT`, so `readable_extra` cannot become a back door
 around the contract. The authoritative allow-list for any module is
-`python -m framework.architecture.cli readable <module>`.
+`./bin/python -m framework.architecture.cli readable <module>`.
 
 ## 4. State is recorded, not narrated
 
 Per-capability state lives in `docs/implement/<module>/STATE.yaml` and is
-written only by `python -m tools.implement.state <cmd>`. The five states
+written only by `./bin/python -m tools.implement.state <cmd>`. The five states
   and the transitions between them are validated by the CLI; agents and
   Owner never hand-edit STATE.yaml.
 
@@ -177,7 +177,7 @@ back to developer; incomplete review goes back to reviewer. A complete review
 awaiting Owner's decision returns to the review gate, provided the code has
 not changed since review. Never approve from a partial Record or reset files
 merely because a run was interrupted. `changes_requested` is reopened with
-`python -m tools.implement.state retry <module> <cap>`; an MVP that turned
+`./bin/python -m tools.implement.state retry <module> <cap>`; an MVP that turned
 out to be needed for real is reopened with
 `retry <module> <cap> --mode full`.
 
@@ -201,8 +201,14 @@ cannot deadlock the work it is blocking.
 
 ## 5. Two gates per capability (Owner intervenes twice in the normal path)
 
-  1. **Card gate.** Owner reads the Capability Card (~10 lines) and
-     chooses: `go / redo / abandon`. This decides mode.
+  1. **Card gate.** Before any code exists. The dispatcher presents the Card
+     in the form `docs/implement/templates/DECISION_PROMPT.template.md`
+     gives — signature, the four test-plan lines, and what the Card refuses
+     to decide — and Owner chooses `go / redo / abandon`. This decides mode,
+     and it is the only place mode is decided. Owner sees the Card's test
+     **plan**, not tests: nothing has been written yet, and the plan is far
+     cheaper to judge than a pile of finished tests. The Card itself is
+     30+ fields and is the subagent's input, not the Owner's reading.
   2. **Completion gate.** In full mode, the dispatcher checks the Manifest
      and automatically dispatches reviewer. Owner then reads the Review
      Record one-liner (`verdict=APPROVED scores=c=OK b=OK t=OK q=OK`) and
@@ -225,15 +231,44 @@ requirement, which was backwards. They now also require:
   - a Review Record no older than that Manifest, so a review cannot speak
     for code written after it. This is an mtime ordering check, not proof
     that the code is unchanged;
+  - **every guarantee the contract declares is mapped to a test that
+    exists.** `mark-approved` reads the capability's `errors[]` and
+    `behavior` from the contract — not from the Card, and not from the
+    Manifest — and requires the Manifest's `tests by obligation:` block to
+    name a test method for each one, with that method present in the test
+    file. A declared error code is a promise to a consumer module that
+    does not exist yet; an untested one is the commonest way that promise
+    is broken, and it is invisible to every check that only reads documents.
+  - **a test run the reviewer performed**: `- tests run: <N> passed,
+    <M> skipped`, with `N ≥ 1` and `M == 0`. A skipped test still leaves
+    the file on disk, still reads as coverage, and still exits 0, so four
+    skipped tests passed every other check here. Zero skips is the rule
+    because a skip is unreviewable — "we cannot exercise this yet" is what
+    `mode: mvp` is for;
   - a non-empty tree: at least one `.py` under the module's declared
-    `source:` and at least one matching `tests/test_<module>*.py`. Four
+    `source:` and at least one test file for the module under `tests/`. Four
     `OK` scores over a module with no code describe nothing.
+
+Test file names come from one rule, not from prose: hyphens and dots both
+become underscores, so `market-data` / `series.get` is
+`tests/test_market_data_series_get.py`, and `./bin/python -m tools.implement.naming
+<module> <capability>` prints the path and the exact command to run it. Ask
+that rather than composing the name — the write-scope audit matches on the
+same rule, so a name assembled any other way reads as a scope violation.
 
 None of that catches an agent that fabricates both documents. A document is
 all this CLI ever sees, so its checks find *inconsistency between artifacts*,
 not a work that did not happen. `tools/implement.scope` — the write-scope
 audit run before the reviewer — is the layer that proves a run actually
 touched files.
+
+The two checks that read the *contract* rather than a document are the
+closest this comes to the code itself, and they are the reason
+`fully_approved` is not just a filing convention: what a consumer is entitled
+to assume is what the contract declares, and `mark-approved` holds the
+implementation to that list. The remaining gap is unchanged and is recorded
+in the code: an agent that writes a consistent contract, Manifest, test file
+and Review Record — all four, all agreeing, none of it tested — still passes.
 
 `abandon` covers the fourth reviewer outcome, but distinguishes two cases
 that share the command: with `--review` it records a reviewer's `ABANDON`
@@ -251,7 +286,36 @@ In all cases, the Owner-facing prompt is a single line of ≤ 100 words.
 Background and rationale stay in the agent prompts and CLI output, never in
 Owner-facing messages.
 
-## 6. Authority order
+## 6. The interpreter
+
+Every command in this repository is `./bin/python -m ...`, never `python -m
+...`. That is not a style preference:
+
+  - There is no `python` on this machine's PATH.
+  - The shell that runs these commands is neither a login nor an interactive
+    shell and reads no profile, so `conda init` and `conda activate` do not
+    reach it — and the developer and reviewer subagents run their commands
+    in exactly that shell. An interpreter that only exists after activation
+    is an interpreter the workflow cannot rely on.
+
+`bin/python` is a two-line shim that execs the `robinhood-lp` environment
+(Python 3.12). Run commands from the repository root: `-m` resolves `tools.*`
+and `framework.*` from the working directory. To use a different interpreter,
+set `LP2_PYTHON` rather than editing the shim:
+
+```bash
+LP2_PYTHON=/path/to/python ./bin/python -m tools.implement.state ...
+```
+
+The shim exits 127 with a message rather than failing obscurely if the
+environment is missing.
+
+The workflow tooling itself needs only PyYAML. The `robinhood-lp` environment
+additionally carries what module code needs (pandas, numpy, pydantic), so a
+developer implementing a capability is working against the same interpreter
+the tooling runs on.
+
+## 7. Authority order
 
 When sources conflict, use this order:
 
@@ -269,7 +333,7 @@ If a new requirement contradicts the YAML, escalate to ac-designer. If a
 new requirement contradicts a role's hard rules, rewrite the role prompt
 through a normal change (this is a governance change, not silent).
 
-## 7. Out of scope for this policy
+## 8. Out of scope for this policy
 
 This file does NOT cover:
 
@@ -281,15 +345,16 @@ This file does NOT cover:
 
 Those are separate surfaces; this file only defines how agents work.
 
-## 8. Quick reference
+## 9. Quick reference
 
-  - "What may this module read?" → `python -m framework.architecture.cli readable <module>`
-  - "What may this module depend on?" → `python -m framework.architecture.cli depends <module>`
-  - "Who is affected if X changes?" → `python -m framework.architecture.cli impact <contract>`
-  - "What is the state of capability X?" → `python -m tools.implement.state show <module> <cap>`
-  - "May I start this capability?" → `python -m tools.implement.state upstream <module> [<cap>]` (exit 0 = green)
-  - "Who does capability X block?" → `python -m tools.implement.state dependers-of <cap>`
-  - "Register an approved Capability Card" → `python -m tools.implement.state register <module> <cap> --mode <full|mvp>`
-  - "Does module M violate boundaries?" → `python -m tools.check_imports <module>`
-  - "Did this run write outside its module?" → `python -m tools.implement.scope <module> --capability <cap> --base <commit>`
-  - "Run all checks" → `python -m unittest discover -s tests -t . && python -m unittest framework.architecture.tests.test_framework`
+  - "What may this module read?" → `./bin/python -m framework.architecture.cli readable <module>`
+  - "What may this module depend on?" → `./bin/python -m framework.architecture.cli depends <module>`
+  - "Who is affected if X changes?" → `./bin/python -m framework.architecture.cli impact <contract>`
+  - "What is the state of capability X?" → `./bin/python -m tools.implement.state show <module> <cap>`
+  - "May I start this capability?" → `./bin/python -m tools.implement.state upstream <module> [<cap>]` (exit 0 = green)
+  - "Who does capability X block?" → `./bin/python -m tools.implement.state dependers-of <cap>`
+  - "Register an approved Capability Card" → `./bin/python -m tools.implement.state register <module> <cap> --mode <full|mvp>`
+  - "Does module M violate boundaries?" → `./bin/python -m tools.check_imports <module>`
+  - "Did this run write outside its module?" → `./bin/python -m tools.implement.scope <module> --capability <cap> --base <commit>`
+  - "What files does this capability use?" → `./bin/python -m tools.implement.naming <module> <cap>`
+  - "Run all checks" → `./bin/python -m unittest discover -s tests -t . && ./bin/python -m unittest framework.architecture.tests.test_framework`

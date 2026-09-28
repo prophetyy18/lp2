@@ -35,6 +35,7 @@ import yaml
 from framework.architecture import ArchError, Architecture
 from framework.architecture import load as load_arch
 
+from tools.implement import naming
 from tools.implement.errors import StateError
 
 STATE_ROOT = Path("docs/implement")
@@ -273,7 +274,7 @@ def _require_artifact(
             f"--{kind} with the {kind} for {module} / {capability}"
         )
     path = Path(given)
-    expected = root / module / f"{capability}.{kind}.md"
+    expected = naming.artifact_path(root, module, capability, kind)
     if path.resolve() != expected.resolve() or not path.is_file():
         raise StateError(f"{kind} must be the existing {kind} at {expected}")
     content = path.read_text(encoding="utf-8")
@@ -340,6 +341,185 @@ def _require_reason_codes(module: str, capability: str, content: str) -> list[st
     return codes
 
 
+def _capability_defs(module: str, capability: str) -> Any | None:
+    """The contract's own record of what this capability must handle.
+
+    Read from the architecture rather than from the Card, because the Card is
+    a document the module-designer wrote and the contract is what the
+    framework enforces. Resolved against `REPO_ROOT`, the same root the
+    artifact checks use, so one root governs every read this CLI makes.
+    Returns None when the capability is not declared, so a typo is a refusal
+    rather than a crash.
+    """
+    arch = load_arch(REPO_ROOT)
+    found = _provider_of(arch, capability)
+    if found is None or found[0] != module:
+        return None
+    for cap in arch.contract(found[1]).provides:
+        if cap.id == capability:
+            return cap
+    return None
+
+
+def _test_obligations(cap: Any) -> dict[str, str]:
+    """What the contract itself demands a test for, keyed by obligation.
+
+    Every error code is a promise to a consumer that this failure is
+    reported rather than raised as something else, and `idempotent` /
+    `ordering` are guarantees a caller will rely on. All of it is already
+    machine-readable in the contract YAML, and the MVP path had learned this
+    the hard way -- the discovery template's own worked example is "3 of the
+    4 declared error codes are unimplemented". The full path is the only one
+    another module may consume, so it is the one that has to carry the
+    lesson.
+
+    Empty for a capability that declares no errors and no behavior guarantee,
+    which is most of a base module; the check is then vacuous, not absent.
+    """
+    obligations: dict[str, str] = {e.code: f"error code {e.code}" for e in cap.errors}
+    behavior = cap.behavior
+    if behavior is not None:
+        # `idempotent` is Optional, and None means "not specified" rather
+        # than False -- a capability that says nothing is not promising to
+        # be non-idempotent, so it earns no obligation.
+        if behavior.idempotent is True:
+            obligations["idempotent"] = "behavior.idempotent: true"
+        if behavior.ordering in ("total", "partial"):
+            obligations["ordering"] = f"behavior.ordering: {behavior.ordering}"
+    return obligations
+
+
+def _obligation_block(manifest: str) -> dict[str, str] | None:
+    """Parse the Manifest's `tests by obligation:` mapping, or None.
+
+    A mapping rather than a count, because a count cannot say *which*
+    failure a test covers, and the failure this exists to catch is precisely
+    an unclaimed one. Deliberately not matched by searching the test file
+    for the error code as a string: a developer who parametrizes over
+    `cap.errors` has written a better test than one who pastes the literal,
+    and refusing that would train people into the worse habit.
+    """
+    lines = manifest.splitlines()
+    for index, line in enumerate(lines):
+        if not re.match(r"^-\s*tests by obligation:\s*$", line):
+            continue
+        out: dict[str, str] = {}
+        for entry in lines[index + 1 :]:
+            match = re.match(r"^\s+-\s+(\S+):\s+(\S+)\s*$", entry)
+            if not match:
+                break
+            out[match.group(1)] = match.group(2)
+        return out
+    return None
+
+
+def _require_obligations_tested(
+    module: str, capability: str, manifest: str
+) -> list[str]:
+    """Every guarantee the contract declares must be claimed by a named test.
+
+    And the named test must exist. A mapping the developer wrote but did not
+    honour is the failure mode a count cannot see, and it is the one an
+    agent under pressure to reach a gate produces.
+
+    The honest limit: this reads three artifacts -- contract, Manifest, test
+    file -- so an agent that writes all three consistently but tests nothing
+    still passes. What it rules out is the specific, common, and previously
+    invisible case of a capability whose declared error surface is partly
+    untested, and where the Manifest quietly says otherwise.
+    """
+    cap = _capability_defs(module, capability)
+    if cap is None:
+        raise StateError(
+            f"capability {capability!r} is not declared by any contract owned "
+            f"by module {module!r}; add it to the module's contract first"
+        )
+    obligations = _test_obligations(cap)
+    if not obligations:
+        return []
+    claimed = _obligation_block(manifest)
+    if claimed is None:
+        raise StateError(
+            f"{module} / {capability} declares "
+            f"{len(obligations)} guarantee(s) that need a test -- "
+            + ", ".join(sorted(obligations))
+            + f" -- but the Manifest carries no `tests by obligation:` block. "
+            f"Map each one to a test method that covers it."
+        )
+    unknown = sorted(set(claimed) - set(obligations))
+    if unknown:
+        raise StateError(
+            f"Manifest for {module} / {capability} claims obligation(s) "
+            f"{unknown} the contract does not declare; the contract declares "
+            f"{sorted(obligations)}"
+        )
+    missing = [o for o in obligations if o not in claimed]
+    if missing:
+        raise StateError(
+            f"{module} / {capability} declares guarantee(s) {missing} with no "
+            f"test claimed for them in the Manifest. A declared error code is "
+            f"a promise to whoever consumes this module that the failure is "
+            f"reported that way; an untested one is the commonest way that "
+            f"promise is broken."
+        )
+    test_file = REPO_ROOT / naming.test_rel_path(module, capability)
+    if not test_file.is_file():
+        raise StateError(
+            f"{module} / {capability} claims tests in its Manifest but "
+            f"{test_file} does not exist. `./bin/python -m tools.implement.naming "
+            f"{module} {capability}` prints the expected path."
+        )
+    source = test_file.read_text(encoding="utf-8")
+    unfulfilled = [
+        f"{key} -> {name}"
+        for key, name in sorted(claimed.items())
+        if not re.search(rf"^\s*def\s+{re.escape(name)}\s*\(", source, re.MULTILINE)
+    ]
+    if unfulfilled:
+        raise StateError(
+            f"{test_file} has no test method for {unfulfilled}. The Manifest "
+            f"maps a guarantee to a test that is not there."
+        )
+    return sorted(obligations)
+
+
+def _require_tests_run(content: str, module: str, capability: str) -> int:
+    """The reviewer must have run the tests, and none of them may be skipped.
+
+    `test_coverage: OK` is a claim about tests nobody in the record was
+    required to execute. A skipped test still leaves the file on disk, still
+    counts as coverage, and still reports OK to the exit code -- so four
+    skipped tests pass every other check in this CLI. Zero skips is the rule
+    because a skip is unreviewable: it asserts nothing, and "we cannot run
+    this here" is what `mode: mvp` is for.
+    """
+    found = re.findall(
+        r"^-\s*tests run:\s*(\d+)\s+passed,\s*(\d+)\s+skipped\s*$",
+        content,
+        re.MULTILINE,
+    )
+    if len(found) != 1:
+        raise StateError(
+            f"review of {module} / {capability} must carry exactly one "
+            f"`- tests run: <N> passed, <M> skipped` line recording what the "
+            f"reviewer actually ran, got {len(found)}"
+        )
+    passed, skipped = (int(n) for n in found[0])
+    if passed < 1:
+        raise StateError(
+            f"review of {module} / {capability} reports {passed} tests passed; "
+            f"the reviewer must have run the capability's test file"
+        )
+    if skipped:
+        raise StateError(
+            f"review of {module} / {capability} reports {skipped} skipped "
+            f"test(s). A skip asserts nothing, so it is not coverage: a "
+            f"guarantee that cannot be exercised here is what `mode: mvp` is "
+            f"for, not a reason to skip."
+        )
+    return passed
+
+
 def _module_source(module: str) -> Path:
     """The module's declared source root, from its module.yaml.
 
@@ -367,17 +547,21 @@ def _require_work_exists(module: str) -> None:
     the empty case. It will not catch an agent that fabricates both a
     Manifest and a Review Record — nothing in this CLI can, because a
     document is all it ever sees. The write-scope audit
-    (`python -m tools.implement.scope --base <commit>`) is the layer that
+    (`./bin/python -m tools.implement.scope --base <commit>`) is the layer that
     proves a run actually touched files.
     """
     source = _module_source(module)
     has_code = source.is_dir() and any(source.rglob("*.py"))
-    # tests are conventionally tests/test_<module>_<cap>.py; the directory
-    # uses hyphens and the package uses underscores, so accept either
-    stem = module.replace("-", "_")
+    # A gate that knows only a module cannot know which of its test files
+    # belong to this capability, so it asks the weaker question the data can
+    # actually answer: does the module have tests at all? The write-scope
+    # audit does know the capability and asks the exact one. Both go through
+    # `naming`, so the two layers cannot disagree on what a test file is
+    # called — which is how they came to disagree before.
+    stem = naming.module_test_prefix(module)
     tests = REPO_ROOT / "tests"
     has_tests = tests.is_dir() and any(
-        p.name.startswith("test_" + stem) and p.suffix == ".py" for p in tests.iterdir()
+        p.name.startswith(stem) and p.suffix == ".py" for p in tests.iterdir()
     )
     if not has_code:
         raise StateError(
@@ -388,9 +572,11 @@ def _require_work_exists(module: str) -> None:
         )
     if not has_tests:
         raise StateError(
-            f"no test file matching tests/test_{stem}*.py exists, so there is "
+            f"no test file matching {stem}*.py exists under tests/, so there is "
             f"no test coverage behind the Review Record's `test_coverage: OK`. "
-            f"The developer must add tests under tests/ before review."
+            f"The developer must add tests under tests/ before review; "
+            f"`./bin/python -m tools.implement.naming {module} <capability>` prints "
+            f"the expected path."
         )
 
 
@@ -424,10 +610,10 @@ def _refuse_if_blocked(module: str, capability: str, root: Path, command: str) -
     with `fully_approved`. The blocker file is the only record there is, so
     the file is what the gate checks.
     """
-    path = root / module / f"{capability}.design-blocker.md"
+    path = naming.artifact_path(root, module, capability, "design-blocker")
     if not path.is_file():
         return
-    resolved = path.with_name(f"{capability}.design-blocker.resolved.md")
+    resolved = naming.artifact_path(root, module, capability, "design-blocker.resolved")
     raise StateError(
         f"{command} refused: an open design blocker exists at {path}. A design "
         f"blocker is not a review outcome and does not change STATE, so this "
@@ -592,7 +778,7 @@ def _archive_mvp_manifest(module: str, capability: str, given: str) -> Path | No
             f"it were a first plan."
         )
         return None
-    dest = src.with_name(f"{capability}.mvp-manifest.md")
+    dest = naming.artifact_in(src.parent, capability, "mvp-manifest")
     if dest.exists():
         raise StateError(
             f"refusing to reopen {module}/{capability}: an archived MVP Manifest "
@@ -662,6 +848,15 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
     mark-mvp demanded a Manifest, mark-approved did not. The Manifest is
     what lists the files that were written, so it is the one artifact that
     can be checked against the tree.
+
+    Two checks here read the *contract* rather than a document, and they are
+    the only ones that do. Every declared error code, and every declared
+    behavior guarantee, must be mapped by the Manifest to a test method that
+    exists; and the Review Record must say how many tests the reviewer
+    actually ran, with none skipped. Both exist because `fully_approved` is
+    consumable: it is the one state in which something this CLI has never
+    read — the code, and the promise the contract makes to a consumer that
+    does not exist yet — is taken on trust.
     """
     record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
@@ -672,7 +867,7 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
             "mark-approved requires mode=full; reopen an MVP with "
             "`retry --mode full` and take it through the reviewed path"
         )
-    _require_artifact(
+    manifest = _require_artifact(
         args.module,
         args.capability,
         Path(args.root),
@@ -681,6 +876,13 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
         f"# manifest: {args.module} / {args.capability}",
     )
     _require_work_exists(args.module)
+    # The two checks below are the only ones in this CLI that read the
+    # contract rather than a document, and they are here because
+    # `fully_approved` is the one state another module is allowed to build
+    # on: what a consumer is entitled to assume about this capability is
+    # whatever the contract declares, and an untested error code is a broken
+    # promise made to a module that has not been written yet.
+    _require_obligations_tested(args.module, args.capability, manifest)
     _require_review_after_manifest(args.review, args.manifest)
     content = _require_artifact(
         args.module,
@@ -690,23 +892,22 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
         args.review,
         f"# review: {args.module} / {args.capability}",
     )
-    verdicts = re.findall(r"^- verdict:\s*(\S+)\s*$", content, re.MULTILINE)
-    if verdicts != ["APPROVED"]:
-        raise StateError(
-            f"review of {args.module} / {args.capability} must carry exactly "
-            f"one APPROVED verdict, got {verdicts or 'none'}"
-        )
+    _require_verdict(args.module, args.capability, content, "APPROVED")
     for score in ("contract_conformance", "boundary", "test_coverage", "implementation_quality"):
         values = re.findall(rf"^\s*{score}:\s*(\S+)", content, re.MULTILINE)
         if values != ["OK"]:
             raise StateError(f"review score {score} must be exactly one OK")
+    run = _require_tests_run(content, args.module, args.capability)
     rec.state = "fully_approved"
     rec.approved_at = _now_iso()
     rec.review = str(Path(args.review))
     if not rec.manifest:
         rec.manifest = args.manifest
     save_state(record, Path(args.root))
-    _print(f"marked {args.module}/{args.capability} as fully_approved")
+    _print(
+        f"marked {args.module}/{args.capability} as fully_approved "
+        f"({run} tests run by the reviewer)"
+    )
     return 0
 
 
@@ -912,7 +1113,7 @@ def _print(msg: str) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python -m tools.implement.state")
+    p = argparse.ArgumentParser(prog="./bin/python -m tools.implement.state")
     p.add_argument(
         "--root",
         default=str(STATE_ROOT),
