@@ -1,82 +1,76 @@
 # Repository policy for AI coding agents
 
-This file is the owner-facing policy for every AI agent that touches this
-repository. Product intent, contract surface, and architecture rules live
-in their own files (`architecture/`, `framework/architecture/`); this file
-defines how agents should work.
+**Constraints that hold for every role, in every session.** Loaded beside
+`CLAUDE.md` as project instructions, and inherited by spawned subagents.
 
-## 1. Five roles, one Owner
+`CLAUDE.md` says what to do in this repository and how work is routed here.
+This file says what is true regardless of who is doing it. The split is not
+cosmetic: a rule that appears in both files will drift, because editing one
+does not touch the other. `tests/test_instruction_files.py` fails if it does.
 
-| Role | When active | What it does |
+**Role-specific process is not here.** How the dispatcher runs the gates, what
+a Manifest must contain, what a reviewer scores — that is the role's own file
+under `.claude/agents/`, and putting it here as well meant maintaining it
+twice. This file is loaded into every subagent, including ones that must never
+touch that process; a 200-line copy of it costs the tester as much as the
+dispatcher.
+
+Product intent, contract surface, and architecture rules live in their own
+files (`architecture/`, `framework/architecture/`).
+
+## 1. Who does what
+
+| Role | What it does | Prompt |
 |---|---|---|
-| **Owner** | always (you) | one-line decisions at the capability gates; nothing else |
-| **ac-designer** | architecture changes | edits `architecture/contracts/`, `architecture/modules/`; never reads implementation |
-| **module-designer** | planning a module | writes `docs/implement/<module>/PLAN.md` + Capability Cards; never writes code |
-| **developer** | implementing a capability | writes `modules/<module>/**` + tests + Implementation Manifest; one capability per spawn |
-| **reviewer** | auditing a capability (full mode) | produces 4-score Review Record; one capability per spawn |
+| **Owner** | one-line decisions at the capability gates; nothing else | — |
+| **dispatcher** (main session) | mediates between Owner and the subagents; the only role that talks to you | — |
+| **ac-designer** | edits `architecture/contracts/`, `architecture/modules/`; never reads implementation | `.claude/agents/ac-designer.md` |
+| **module-designer** | writes the module PLAN and Capability Cards; never writes code | `.claude/agents/module-designer.md` |
+| **tester** | writes the tests, from the Card; **never reads or writes implementation** | `.claude/agents/tester.md` |
+| **developer** | writes `modules/<module>/**` + Manifest; never writes or edits tests | `.claude/agents/developer.md` |
+| **reviewer** | audits a capability (full mode); one capability per spawn | `.claude/agents/reviewer.md` |
 
-The dispatcher (main session) mediates between Owner and the four
-subagents; it is the only role that talks to you. ac-designer is a
-prefix-invoked role; module-designer / developer / reviewer are spawned
-subagents (see `.claude/agents/<role>.md` for each role's prompt).
-Only the dispatcher calls the state CLI; developer and reviewer report
-artifacts and findings without changing STATE.yaml.
+The order is **tester → developer → tester (if needed) → reviewer**, and the
+tester runs first for a structural reason, not a stylistic one: a developer who
+writes its own tests asserts what it built rather than what was specified. The
+tester's read scope excludes `modules/<module>/**`, and the developer cannot
+edit the test file, so neither can revise the specification to fit the result.
+Both halves are enforced by the audited write-scope layer with `--role`.
 
-## 2. Two modes per capability
+Only the dispatcher calls the state CLI. Every other role reports artifacts
+and findings without changing `STATE.yaml`.
 
-  - **mvp** — developer writes the capability; reviewer is skipped;
-    state recorded as `mvp_developed`. Use when: prototyping or validating
-    the contract surface before committing to it.
-  - **full** — developer writes; reviewer audits; state recorded as
-    `fully_approved` on reviewer APPROVED.
+## 2. Modes, states, and who may consume what
 
-Owner decides the mode when the Capability Card is prepared. Default `full`.
+Two modes per capability, and the Owner decides which at the Card gate:
 
-**Only `fully_approved` makes a capability usable.** No other module may
-build on a `pending`, `mvp_developed`, `changes_requested` or `abandoned`
-capability — there is no yellow flag and no warning pass. An MVP is never
-promoted in place; there is no edge from `mvp_developed` to
-`fully_approved`.
+  - **mvp** — developer writes; reviewer is skipped; state is `mvp_developed`.
+  - **full** — developer writes; reviewer audits; state is `fully_approved` on
+    APPROVED. This is the default.
 
-**An MVP is the foreword to the full implementation, not a throwaway.**
-Its code is disposable — it was never reviewed, so it has no error
-handling and no edge cases — but what it learned is what the full run
-inherits. So `mark-mvp` requires a Manifest carrying a `## discovery`
-section:
+Capability states are `pending`, `mvp_developed`, `changes_requested`,
+`fully_approved`, `abandoned`. Two of those are load-bearing beyond this file:
 
-  - `question` / `answer`   what the spike was for, and what turned out
-  - `surprised`             anything that did not match the Card/contract
-  - `keep`                  assets the full run inherits as-is
-  - `discard`               code the full run must NOT inherit
-  - `known_gaps`            what the full run still has to build
+- **Only `fully_approved` is consumable.** No other module may build on a
+  `pending`, `mvp_developed`, `changes_requested` or `abandoned` capability.
+  There is no yellow flag and no warning pass.
+- **An MVP is never promoted in place.** There is no edge from `mvp_developed`
+  to `fully_approved`; reopening for real is `retry <m> <cap> --mode full`,
+  which walks both gates again.
 
-`keep` and `discard` are a pair on purpose: an unreviewed prototype that
-leaks into production is the usual way a spike becomes a liability.
+An MVP is optional, and its code *and its tests* are disposable — that is the
+premise of the mode. What survives is its `## discovery` section, which the
+module-designer folds into a revised Card; that handoff is the whole reason the
+mode is cheap rather than wasteful.
 
-Turning an MVP into something real is a four-step path, and the middle
-step is what makes the knowledge survive:
+The transitions, the evidence each one demands, and the gates themselves are
+in `.claude/agents/dispatcher.md` and enforced by the CLI. An agent that needs
+to know what a gate requires reads that file; it does not need the rule in its
+context to respect it.
 
-```
-retry <m> <cap> --mode full
-  → archives the MVP Manifest to <cap>.mvp-manifest.md
-  → module-designer reads that discovery and folds it into a revised Card  ← the handoff
-  → Owner approves → developer builds from the revised Card
-```
-
-The MVP ran in a different agent session whose memory is gone. The revised
-Card is where its findings have to live, so a developer never inherits
-prototype code whose intent nobody wrote down. The prototype's code does
-stay in the tree, so the developer is told what it is: the Card is the
-specification, the prototype is not, and existing tests are evidence rather
-than requirements.
-
-An MVP is optional. `full` is the default mode and a fresh full
-implementation never looks for one.
-
-Full-mode review keeps four scores: contract conformance (including spec
-drift), boundary, test coverage, and implementation quality. Quality covers
-explicit errors, bounded timeouts/retries where relevant, cleanup,
-readability, and useful types; it does not require unrelated machinery.
+**`STATE.yaml` is written only by the state CLI, and by no hand.** Five states
+and the transitions between them are validated; agents and Owner never
+hand-edit it. Every command in this repository is `./bin/python -m ...`.
 
 ## 3. Isolation layers (module boundary is hard)
 
@@ -85,16 +79,18 @@ A module may read its own tree, `architecture/**`, and what its own
 Four layers back that up, and they are not equally strong:
 
   1. **Declared read scope (policy, not enforcement).** Each role's
-     `.claude/agents/<role>.md` declares an exact allow-list of paths, and
-     the dispatcher copies it into the spawn prompt. This environment does
-     not register per-role subagents, so a subagent runs with the ambient
-     tool permissions and this layer cannot be mechanically enforced. It is
-     a stated obligation the role is held to, not a wall.
+     `.claude/agents/<role>.md` declares an exact allow-list of paths. This
+     environment does not register per-role subagents, so a subagent runs with
+     the ambient tool permissions and this layer cannot be mechanically
+     enforced. It is a stated obligation the role is held to, not a wall.
   2. **Audited write scope (enforced).** `./bin/python -m tools.implement.scope
-     <module> --capability <cap> --base <commit>` compares the files the run
-     left behind against what that module may write. It is the layer that
-     actually holds, because a run that writes outside its own tree is
-     visible afterwards even when it was never stopped.
+     <module> --capability <cap> --role <tester|developer> --base <commit>`
+     compares the files the run left behind against what that role may write.
+     It is the layer that actually holds, because a run that writes outside
+     its own tree is visible afterwards even when it was never stopped.
+     `--role` is what keeps the two halves apart: the tester may write the
+     test file but not the source, the developer the reverse. Neither can
+     revise the other's.
   3. **AST import scanner.** `./bin/python -m tools.check_imports <module>`
      walks every `.py` under `modules/<module>/` and resolves each import to
      a repo path, then asks the framework (`check_read`) whether the
@@ -128,165 +124,105 @@ a grant without a matching `depends_on` is reported as
 around the contract. The authoritative allow-list for any module is
 `./bin/python -m framework.architecture.cli readable <module>`.
 
-## 4. State is recorded, not narrated
+Every read scope in this repository is a list of **paths in this repo**. It
+bounds what a role may learn *from the artifact it is being measured against*,
+and it says nothing about the rest of the world — see §4.
 
-Per-capability state lives in `docs/implement/<module>/STATE.yaml` and is
-written only by `./bin/python -m tools.implement.state <cmd>`. The five states
-  and the transitions between them are validated by the CLI; agents and
-  Owner never hand-edit STATE.yaml.
+## 4. External facts
 
-States:
+This repository describes a system that talks to a blockchain, so most of what
+a Card or a contract asserts about the outside world is a **mutable fact**:
+chain IDs, deployment addresses, ABIs, pool keys, Hooks, Tokens, RPC
+capabilities, block timing, event shapes, and anything a vendor documents.
+Those rot. A contract that states one without saying how it was established is
+a contract that will be quietly wrong later.
 
-  - `pending`              a developer owes work on this
-  - `mvp_developed`        MVP done — not usable by any other module
-  - `changes_requested`    reviewer rejected
-  - `fully_approved`       reviewer approved — **the only consumable state**
-  - `abandoned`            owner closed this capability (terminal)
+### The read scope does not forbid research
 
-`pending` carries exactly one meaning: a developer owes work. A fresh
-registration and a reopened pass both land there, and nothing else does —
-so an interrupted run is never ambiguous between "not started" and
-"finished, awaiting review".
+**Public material is in scope for every role**, without asking and without
+listing it: official documentation, a protocol specification, a chain's own
+reference, a vendor API reference, a published postmortem. Use `WebSearch` and
+`WebFetch`.
 
-A module also carries a three-value summary, and it is a **summary, never a
-gate**:
+This is not a loophole, and the test for it is exact: the isolation rule exists
+so a role **cannot learn the answer from the thing it is being measured
+against**. Public documentation cannot leak that answer, because the publisher
+does not know what your Card says. `modules/<m>/impl/calendar.py` can. If
+reading it hands you the answer to what you are building or specifying, it is
+forbidden; if it hands you facts about the outside your specification has to
+survive contact with, it is required.
 
-  - `not_started`  nothing worked on yet (all `pending`, or none declared)
-  - `in_progress`  work has started and has not landed
-  - `complete`     every capability is `fully_approved`
+### Source hierarchy
 
-It is computed from the capability rows and printed as a comment by
-`state show`; it is deliberately **not stored** in `STATE.yaml`. Three
-values, because three is what it can say without repeating the rows
-underneath it. Its old six-value form encoded details the rows already
-carried — `rework` restated `changes_requested` (whose reason codes say
-more), `partial_mvp` restated `mvp_developed` — and `partially_complete`
-claimed a granularity that does not exist: **consumption is per capability,
-so a module is never a consumable unit.** Whether another module may
-depend on this one is answered by `state upstream`, per capability.
+Not all sources are equal, and the difference is recorded:
 
-Two consequences of the three-value set, so they are not mistaken for
-bugs: a module whose capabilities were all abandoned reports
-`in_progress` (there is no fourth value for "started, then closed"), and
-adding a capability to a `complete` module drops it back to `in_progress`.
+  - **Verification** — official source, official documentation, and
+    block-pinned chain reads. A chain read means a read at a named block, not
+    at `latest`.
+  - **Cross-check only** — third-party pages, aggregators, forums, tutorials,
+    blog posts. Useful for finding the official page. Never sufficient alone.
+    A forum answer from a vendor employee is a cross-check unless the vendor
+    documents it.
 
-An interrupted developer or reviewer run does not create a new state. To
-resume, the dispatcher reads STATE, the approved Card, existing source and
-tests, the Manifest, and any Review Record. Incomplete developer work goes
-back to developer; incomplete review goes back to reviewer. A complete review
-awaiting Owner's decision returns to the review gate, provided the code has
-not changed since review. Never approve from a partial Record or reset files
-merely because a run was interrupted. `changes_requested` is reopened with
-`./bin/python -m tools.implement.state retry <module> <cap>`; an MVP that turned
-out to be needed for real is reopened with
-`retry <module> <cap> --mode full`.
+### Record the coordinates, not just the link
 
-If developer or reviewer finds a contradiction in the approved contract or
-Card, it writes `<capability>.design-blocker.md`, returns `DESIGN_BLOCKED`,
-and stops the affected work. This is not `changes_requested`; STATE remains
-unchanged. Dispatcher routes contract/boundary/dependency issues to
-ac-designer and Card/plan issues to module-designer, obtains Owner approval
-for changed design, records the resolution, and resumes implementation.
-Reviewer audits again after a design change. An open Design Blocker takes
-priority over ordinary interruption recovery.
+A URL is not a citation for a fact that can change under you. Record, in the
+same place the fact is written down:
 
-Because STATE deliberately has no blocker state, the file is the whole
-record, and the state CLI enforces it: `mark-mvp`, `mark-changes` and
-`mark-approved` all refuse while `<capability>.design-blocker.md` exists, so
-a fixed-but-forgotten blocker cannot silently keep a capability from ever
-completing. Resolution is recorded in the file's `resolution:` field, then
-the file is **renamed** to `<capability>.design-blocker.resolved.md` — never
-deleted, so the reasoning stays readable. `retry` is not gated, so a blocker
-cannot deadlock the work it is blocking.
+```
+source:        the official URL or the exact command run
+retrieved at:  when
+chain id:      which chain
+block:         block number or hash the read was pinned to
+code hash:     when the fact is about deployed bytecode
+```
 
-## 5. Two gates per capability (Owner intervenes twice in the normal path)
+For a fact read from a chain, `block` is not optional. The same query at
+`latest` tomorrow may return something else, and without the block the claim
+cannot be re-checked by anyone — including you, next week.
 
-  1. **Card gate.** Before any code exists. The dispatcher presents the Card
-     in the form `docs/implement/templates/DECISION_PROMPT.template.md`
-     gives — signature, the four test-plan lines, and what the Card refuses
-     to decide — and Owner chooses `go / redo / abandon`. This decides mode,
-     and it is the only place mode is decided. Owner sees the Card's test
-     **plan**, not tests: nothing has been written yet, and the plan is far
-     cheaper to judge than a pile of finished tests. The Card itself is
-     30+ fields and is the subagent's input, not the Owner's reading.
-  2. **Completion gate.** In full mode, the dispatcher checks the Manifest
-     and automatically dispatches reviewer. Owner then reads the Review
-     Record one-liner (`verdict=APPROVED scores=c=OK b=OK t=OK q=OK`) and
-     chooses `approve / changes / abandon`. In MVP mode, Owner reads the
-     Manifest result and chooses `accept / changes / abandon`.
+### `UNKNOWN` is a legal answer
 
-Both transitions are recorded by the state CLI and neither is a hand-edit:
-`mark-approved` validates an APPROVED Review Record, `mark-changes`
-validates a CHANGES_REQUESTED one plus its reason codes, and `mark-mvp`
-validates a Manifest with a `## discovery` section. All three refuse while
-a design blocker for the capability is open.
+**If verification fails, return `UNKNOWN` or block the work. Never guess, and
+never copy another chain's value, another provider's convention, or a
+plausible-looking number.**
 
-`mark-approved` and `mark-changes` take **both** artifacts, not just the
-Review Record. Full mode is the only path to `fully_approved` — the one
-state another module may consume — so it used to have the weaker evidence
-requirement, which was backwards. They now also require:
+This is the rule that matters most, and it exists because of what happens
+without it. A role that is told to research but has no legal way to fail will
+fill the gap with a guess — and a guess that gets written into a fixture, a
+Card, or a contract becomes **permanently indistinguishable from a fact**. On
+the first real run of this workflow, `SESSION_HOUR_UTC = 21` was invented as a
+test fixture, restated as a rule in a Capability Card, and ratified at an Owner
+gate — three documents later it was an apparent fact with no source anywhere,
+and a whole exchange calendar was researched to justify it. It had no origin
+at all. `UNKNOWN` is a terminal state that forces the gap to a human; a guess
+is a terminal state that hides it.
 
-  - a Manifest (canonical path, header tied to the capability, same as
-    `mark-mvp` checks it);
-  - a Review Record no older than that Manifest, so a review cannot speak
-    for code written after it. This is an mtime ordering check, not proof
-    that the code is unchanged;
-  - **every guarantee the contract declares is mapped to a test that
-    exists.** `mark-approved` reads the capability's `errors[]` and
-    `behavior` from the contract — not from the Card, and not from the
-    Manifest — and requires the Manifest's `tests by obligation:` block to
-    name a test method for each one, with that method present in the test
-    file. A declared error code is a promise to a consumer module that
-    does not exist yet; an untested one is the commonest way that promise
-    is broken, and it is invisible to every check that only reads documents.
-  - **a test run the reviewer performed**: `- tests run: <N> passed,
-    <M> skipped`, with `N ≥ 1` and `M == 0`. A skipped test still leaves
-    the file on disk, still reads as coverage, and still exits 0, so four
-    skipped tests passed every other check here. Zero skips is the rule
-    because a skip is unreviewable — "we cannot exercise this yet" is what
-    `mode: mvp` is for;
-  - a non-empty tree: at least one `.py` under the module's declared
-    `source:` and at least one test file for the module under `tests/`. Four
-    `OK` scores over a module with no code describe nothing.
+So: **a fixture is a test input, never evidence about the world.** Synthetic
+data is legitimate and often necessary — it is what makes a test hermetic. It
+stops being legitimate the moment anyone cites it as a reason to believe
+something about the outside world, and no number of passing tests changes that.
+Tests prove the implementation matches the specification. They do not prove the
+specification matches reality.
 
-Test file names come from one rule, not from prose: hyphens and dots both
-become underscores, so `market-data` / `series.get` is
-`tests/test_market_data_series_get.py`, and `./bin/python -m tools.implement.naming
-<module> <capability>` prints the path and the exact command to run it. Ask
-that rather than composing the name — the write-scope audit matches on the
-same rule, so a name assembled any other way reads as a scope violation.
+### Two more rules that came with the research rule
 
-None of that catches an agent that fabricates both documents. A document is
-all this CLI ever sees, so its checks find *inconsistency between artifacts*,
-not a work that did not happen. `tools/implement.scope` — the write-scope
-audit run before the reviewer — is the layer that proves a run actually
-touched files.
+  - **Names are not evidence.** Symbols, tickers, display names and IDs are
+    metadata. Verify the underlying thing — the address, the code hash, the
+    chain — and treat an unknown settlement behaviour as ineligible rather than
+    assuming the friendly name tells you anything.
+  - **Absence of evidence is not a pass.** Missing credentials, an unreachable
+    endpoint, or unavailable integration evidence is a failure state to report,
+    never a condition to work around by assuming.
 
-The two checks that read the *contract* rather than a document are the
-closest this comes to the code itself, and they are the reason
-`fully_approved` is not just a filing convention: what a consumer is entitled
-to assume is what the contract declares, and `mark-approved` holds the
-implementation to that list. The remaining gap is unchanged and is recorded
-in the code: an agent that writes a consistent contract, Manifest, test file
-and Review Record — all four, all agreeing, none of it tested — still passes.
+### Where a finding goes
 
-`abandon` covers the fourth reviewer outcome, but distinguishes two cases
-that share the command: with `--review` it records a reviewer's `ABANDON`
-verdict (the work is fundamentally off-target, which may point at the Card
-rather than the code); without it, it is purely Owner's decision. The flag
-stays optional because closing a capability that was never reviewed is an
-ordinary thing for Owner to do.
+Research never widens a role's authority. If looking things up shows the
+contract is silent, wrong, or under-specified, that is a **Design Blocker** to
+ac-designer — the same route as any other discovery. Finding a gap is not
+permission to fill it yourself.
 
-There is no promote mode. An MVP is not usable by another module and is
-never promoted in place: the Owner reopens it with
-`retry <module> <cap> --mode full`, which keeps the existing source and
-tests, and it must then walk the full Card and completion gates.
-
-In all cases, the Owner-facing prompt is a single line of ≤ 100 words.
-Background and rationale stay in the agent prompts and CLI output, never in
-Owner-facing messages.
-
-## 6. The interpreter
+## 5. The interpreter
 
 Every command in this repository is `./bin/python -m ...`, never `python -m
 ...`. That is not a style preference:
@@ -315,7 +251,7 @@ additionally carries what module code needs (pandas, numpy, pydantic), so a
 developer implementing a capability is working against the same interpreter
 the tooling runs on.
 
-## 7. Authority order
+## 6. Authority order
 
 When sources conflict, use this order:
 
@@ -329,23 +265,20 @@ When sources conflict, use this order:
   5. `docs/implement/<module>/STATE.yaml` — workflow state; written by CLI
   6. `docs/implement/templates/*` — template shape, not authoritative
 
-If a new requirement contradicts the YAML, escalate to ac-designer. If a
-new requirement contradicts a role's hard rules, rewrite the role prompt
-through a normal change (this is a governance change, not silent).
+This file and `CLAUDE.md` are both project instructions and neither is
+authoritative over the other: they are partitioned by subject, and a rule
+belongs in exactly one. If a new requirement contradicts the YAML, escalate to
+ac-designer. If a new requirement contradicts a role's hard rules, rewrite the
+role prompt through a normal change (this is a governance change, not
+silent).
 
-## 8. Out of scope for this policy
+## 7. Out of scope for this policy
 
-This file does NOT cover:
+Not covered here, and deliberately: product intent and non-goals
+(`architecture/contracts/*.yaml` `description:` fields), implementation
+details, and deployment or CI. Those are separate surfaces.
 
-  - product intent, product scope, non-goals — those live in
-    `architecture/contracts/*.yaml` `description:` fields and in
-    (forthcoming) intent docs at `docs/intent/`
-  - implementation details (algorithms, data structures, test fixtures)
-  - deployment, infrastructure, observability, CI provider
-
-Those are separate surfaces; this file only defines how agents work.
-
-## 9. Quick reference
+## 8. Quick reference
 
   - "What may this module read?" → `./bin/python -m framework.architecture.cli readable <module>`
   - "What may this module depend on?" → `./bin/python -m framework.architecture.cli depends <module>`
