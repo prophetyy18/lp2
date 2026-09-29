@@ -10,13 +10,6 @@ requires:
   - robinhood-replay-api
 
 provides:
-  - id: features.bars.compute
-    kind: operation
-    signature: "features.bars.compute(pool_id: PoolId, start: int, end: int, interval: str) -> list[Bar]"
-    description: >
-      Time/block bars for the supplied pool over a closed window.
-      T050 bars: every bar carries event-time endpoints and the
-      realized volatility (Q64.64) over its interval.
   - id: features.position.value
     kind: operation
     signature: "features.position.value(position: PositionKey, at_tick: int) -> PositionValuation"
@@ -42,6 +35,6 @@ provides:
     kind: operation
     signature: "features.quote.usdg(symbol: Symbol, at: int) -> USDGPrice"
     description: >
-      Qualified USDG price for the symbol at the supplied event time
+      Qualified USDG price for the symbol at the supplied block number
       (T053). Returns None for RELATIVE_ONLY datasets so the consumer
       fails closed rather than substituting an unqualified quote.

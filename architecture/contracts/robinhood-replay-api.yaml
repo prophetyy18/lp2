@@ -1,5 +1,5 @@
 name: robinhood-replay-api
-version: 1
+version: 2
 description: >
   Deterministic event replay and pool state reconstruction. Consumes
   typed V4 log records and produces PoolCheckpoint records; preserves
@@ -20,6 +20,29 @@ provides:
       records. Enforces V4 pool lifecycle (Initialize at most once,
       ModifyLiquidity/Swap/Donate cannot precede Initialize). Bytes
       out are stable across iteration order.
+
+      The input set is the closed five-event set declared by
+      `rpc.adapter.logs`. Replay is only as correct as the completeness of
+      that set: fee growth is accumulated after the protocol fee is
+      deducted, so a stream missing `ProtocolFeeUpdated` produces a
+      plausible, wrong fee path. `replay.replayer.run` MUST reject an
+      input set that carries a `Swap` for a pool whose `ProtocolFeeUpdated`
+      history it has not seen, rather than replaying it against a default.
+
+      **A replay window MUST begin at the pool's `Initialize` event.**
+      V4 keeps `feeGrowthInside0LastX128` in contract storage and emits
+      nothing for it; the baseline is reconstructible only by observing
+      every `ModifyLiquidity` since initialization. Replaying from a
+      mid-history cursor silently produces wrong `tokens_owed` for every
+      position.
+
+      **`EventCursor` does not yet say what makes a start valid, and that
+      is an open gap, not a settled rule.** This contract states the
+      requirement above so the obligation is visible; it deliberately does
+      not define the type. `EventCursor` is one of the 60 type names in
+      this architecture that have no declared shape, and until the type
+      language is settled a replayer has nothing to check a cursor
+      against and can only honour this by convention.
   - id: replay.ticks.range_to_liquidity
     kind: operation
     signature: "replay.ticks.range_to_liquidity(pool_id: PoolId, range: TickRange, current_tick: int) -> int"
@@ -33,6 +56,17 @@ provides:
       Return the PoolCheckpoint at the named event cursor. The
       checkpoint carries sqrt_price_x96, tick, active_liquidity,
       cumulative volumes, and protocol-fee accumulators.
+
+      The checkpoint ALSO carries, by name:
+        fee_growth_global0_x128   fee_growth_global1_x128
+
+      These were implied by "cumulative volumes" and never stated. They
+      are named here because `features.position.value` promises
+      `tokens_owed` from fee-growth accounting, and a promised output may
+      not rest on an input the contract does not declare. Both are pure
+      accumulators: the difference between two checkpoints is the fee
+      growth over the interval between them, which is why this system
+      needs no bar type to measure a range.
   - id: replay.fee_surface.project
     kind: operation
     signature: "replay.fee_surface.project(pool_id: PoolId, window: BlockWindow) -> FeeProjection"

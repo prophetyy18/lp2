@@ -29,7 +29,6 @@ depends_on:
     reason: BacktestUseCase, HistoricalReplayUseCase and ReduceOnlyUseCase compose the replayer and checkpoint readers
   - contract: robinhood-features-api
     uses:
-      - features.bars.compute
       - features.position.value
       - features.quote.usdg
     reason: assemble the snapshot set the strategy layer reads
@@ -51,3 +50,18 @@ depends_on:
       - signer.lock_state
       - signer.public_address
     reason: the composition root checks signer state and resolves the public address without holding any private material
+
+# Contract read surface. A cross-module dependency needs BOTH halves: the
+# `depends_on` entry above, which says what is used and why, and these
+# grants, which say which files may be imported to use it. Without the
+# grants every declared dependency is declared-but-unenforceable and the
+# AST scanner rejects the import as a BOUNDARY_VIOLATION.
+readable_extra:
+  - modules/robinhood-execution/api/**
+  - modules/robinhood-features/api/**
+  - modules/robinhood-protocol/api/**
+  - modules/robinhood-replay/api/**
+  - modules/robinhood-risk/api/**
+  - modules/robinhood-signer/api/**
+  - modules/robinhood-storage/api/**
+  - modules/robinhood-strategy/api/**

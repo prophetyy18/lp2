@@ -19,3 +19,4 @@ depends_on:
 
 readable_extra:
   - modules/robinhood-signer/keystore/**   # the encrypted Web3 Keystore directory; no other module may read this path
+  - modules/robinhood-protocol/api/**

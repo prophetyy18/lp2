@@ -1,7 +1,7 @@
 name: robinhood-features
 description: >
-  Point-in-time market features: bars (T050), LP position valuation
-  (T051), attribution (T052), USDG quote (T053). Pure functions of
+  Point-in-time market features: LP position valuation (T051),
+  attribution (T052), USDG quote (T053). Pure functions of
   the supplied snapshots and PoolCheckpoint; integer arithmetic only
   on the protocol / valuation path.
 
@@ -20,4 +20,13 @@ depends_on:
     uses:
       - replay.state.checkpoint
       - replay.fee_surface.project
-    reason: bars, valuation, and attribution read PoolCheckpoint and the T104 fee projection; never compute their own fee path
+    reason: valuation and attribution read PoolCheckpoint and the T104 fee projection; never compute their own fee path
+
+# Contract read surface. A cross-module dependency needs BOTH halves: the
+# `depends_on` entry above, which says what is used and why, and these
+# grants, which say which files may be imported to use it. Without the
+# grants every declared dependency is declared-but-unenforceable and the
+# AST scanner rejects the import as a BOUNDARY_VIOLATION.
+readable_extra:
+  - modules/robinhood-protocol/api/**
+  - modules/robinhood-replay/api/**

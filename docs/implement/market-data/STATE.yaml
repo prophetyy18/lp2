@@ -1,0 +1,9 @@
+module: market-data
+capabilities:
+  series.calendar:
+    state: pending
+    mode: full
+  series.symbols:
+    state: pending
+    mode: full
+    manifest: docs/implement/market-data/series.symbols.manifest.md

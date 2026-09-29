@@ -1,0 +1,87 @@
+# Product facts about this deployment.
+#
+# This file is deliberately OUTSIDE `framework/architecture/`. The
+# Architecture Framework models modules, contracts, dependencies, boundaries
+# and impact — nothing else. A chain id is a fact about the product, not an
+# architectural concept, and teaching the framework about it would make the
+# framework depend on knowing which chain this repository happens to target.
+#
+# OWNER DECISION 2026-09-29: 「暂时只需要适配 robinhood」/「只要主网」.
+# Owner chose to place chain scope here rather than in a `chain_scope:` key on
+# the contract YAML (which would have had the loader enforce it) and rather
+# than in a contract `description:` (which is prose nothing checks).
+#
+# HONEST LIMITATION: nothing validates this file. `framework.architecture.cli
+# validate` does not read it, and a contract that names a testnet chain id
+# would still pass validation. This is the accepted cost of keeping the
+# framework independent. If that trade turns out wrong, the fix is a
+# `chain_scope:` key plus a loader check — not a paragraph in a contract.
+
+chain_scope:
+  - 4663            # Robinhood Chain mainnet, 0x1237
+
+# Not in scope. Recorded so that a later reader can tell "deliberately
+# excluded" from "never considered".
+excluded_chains:
+  - 46630           # Robinhood Chain testnet, 0xb626
+
+# Per AGENTS.md §4, a mutable fact needs coordinates, not a link. Re-verify
+# before citing; a head block number is a record of *when* this was read, not
+# a claim that the value ever varies (eth_chainId is a network constant, so
+# block-pinning does not apply to it — the head is recorded for reproducibility
+# of the read, not because the answer depends on it).
+verification:
+  - fact: Robinhood Chain mainnet chain id = 4663 (0x1237)
+    method: eth_chainId
+    endpoint: https://rpc.mainnet.chain.robinhood.com
+    retrieved_at: 2026-09-29T04:22:37Z
+    head_block: "0x47e02c7"
+  - fact: Robinhood Chain testnet chain id = 46630 (0xb626)
+    method: eth_chainId
+    endpoint: https://rpc.testnet.chain.robinhood.com
+    retrieved_at: 2026-09-29T04:22:37Z
+    head_block: "0x782b377"
+
+# Both endpoints answered on the retrieval date above. Testnet being reachable
+# means "mainnet only" is a POLICY, not a technical impossibility — nothing will
+# stop code from dialling 46630 unless that policy is enforced somewhere. Today
+# the only runtime leak is `protocol.identity.chain_id.parse`, which accepts an
+# arbitrary ChainId string by design. Treat that as the place to check first if
+# a testnet connection is ever observed.
+#
+# No testnet deployment of Uniswap V4 is published for 46630 either, so
+# "mainnet only" and "there is a V4 to talk to" happen to agree. They are
+# still separate claims and should stay separate.
+
+# ---------------------------------------------------------------------------
+# The Uniswap V4 deployment this system reads.
+#
+# Every replay semantic in the architecture — fee growth, tick crossing,
+# position accounting — is a claim about THIS contract's behaviour. Upstream
+# v4-core source is evidence about the source, not about what is deployed at
+# this address. The code hash below is what pins the two together: if it ever
+# changes, every one of those claims must be re-checked against the new
+# version before anything is built on it.
+# ---------------------------------------------------------------------------
+contracts:
+  pool_manager:
+    address: "0x8366a39cc670b4001a1121b8f6a443a643e40951"
+    runtime_code_hash: "0xbd3881180b547f5fe817545743cfb4343e96b1bc6640dcd70c106b0066e95626"
+    runtime_code_bytes: 24009
+    owner: "0x2bad8182c09f50c8318d769245bea52c32be46cd"
+    verification:
+      method: eth_getCode + eth_call(owner)
+      endpoint: https://rpc.mainnet.chain.robinhood.com
+      chain_id: 4663
+      block: "0x48109fa"
+      retrieved_at: 2026-09-29T09:56:10Z
+      # The address came from Uniswap's published deployments page, which is
+      # third-party for the purpose of pinning this fact. The chain read above
+      # is the verification: 24009 bytes of code at that address, and owner()
+      # answering with the address the docs name. A code hash alone proves a
+      # contract exists, not that it is a PoolManager — owner() is the part
+      # that ties the two together, and it is weaker than it looks. Treat
+      # "this is the V4 PoolManager" as confirmed-at-this-block, and re-verify
+      # by behaviour (an Initialize event, a Swap event) before depending on
+      # it.
+

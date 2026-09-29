@@ -1,5 +1,5 @@
 name: robinhood-rpc-api
-version: 1
+version: 2
 description: >
   Bounded JSON-RPC adapter. The only RPC surface V1 exposes is the
   closed method set in T020 (eth_blockNumber, eth_getBlockByNumber,
@@ -23,6 +23,32 @@ provides:
       Bounded eth_getLogs with adaptive range splitting. One
       pool-filtered topic0 OR query per stream, never one per event
       type.
+
+      The topic set is CLOSED and is exactly these five, emitted by the
+      PoolManager at `architecture/project.yaml` -> contracts.pool_manager:
+
+        Initialize         (PoolId indexed, currency0, currency1, fee, tickSpacing, hooks, sqrtPriceX96, tick)
+        ModifyLiquidity    (PoolId indexed, sender, tickLower, tickUpper, liquidityDelta, salt)
+        Swap               (PoolId indexed, sender, amount0, amount1, sqrtPriceX96, liquidity, tick, fee)
+        Donate             (PoolId indexed, sender, amount0, amount1)
+        ProtocolFeeUpdated (PoolId indexed, protocolFee)
+
+      A caller MAY narrow this with a subset; it may not widen it. There
+      is no sixth event and no "any other PoolManager log" mode.
+
+      **`ProtocolFeeUpdated` is not optional and is the one that gets
+      forgotten.** The four pool events are the ones that look like pool
+      state, so they read as a complete set. The fifth is not about pool
+      state at all — it changes `slot0.protocolFee`, which is deducted
+      *before* `feeGrowthGlobalX128` accumulates. A stream that omits it
+      replays fee growth against a stale protocol fee and returns a
+      `tokens_owed` that is wrong and looks entirely reasonable. Dropping
+      an event from this list is therefore a correctness bug, not a
+      performance choice.
+
+      All five take `PoolId` as the first indexed parameter, so one query
+      per pool covers all of them: `topic0 IN (<the five>) AND topic1 =
+      <poolId>`.
   - id: rpc.adapter.call
     kind: operation
     signature: "rpc.adapter.call(chain_id: ChainId, block_ref: BlockRef, to: Address, data: bytes) -> bytes"

@@ -1,5 +1,5 @@
 name: robinhood-risk-api
-version: 1
+version: 2
 description: >
   Centralized approve/reject gateway. The single entry point that
   performs the full risk check pipeline before any intent reaches
@@ -30,3 +30,20 @@ provides:
       change bumps version_id; the decision records the version it
       was produced under so a future config cannot retroactively alter
       it.
+  - id: risk.factors
+    kind: data
+    output: { schema: robinhood-risk-api.RiskFactorList }
+    description: >
+      Closed vocabulary of risk factor names the gateway can reason over.
+      A reason code returned by `risk.evaluate` is one of these names, or
+      one of the gateway's own verdicts. This is a contract extension point,
+      so adding a name here requires a contract version bump.
+
+      Migrated from `pricing-api.position.risk_factors` when pricing-api was
+      retired on 2026-09-29. It moved rather than being deleted because it is
+      the one capability in that contract that did not restate something
+      robinhood-features already declared: a closed factor vocabulary is risk
+      vocabulary, and robinhood-risk is the module that owns risk. Its former
+      sibling `position.exposure` was dropped at the same time — it had no
+      consumers, and an exposure figure with no consumer is a capability
+      nothing can be tested against.
