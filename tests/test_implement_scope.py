@@ -141,6 +141,86 @@ class ScopeAuditTests(unittest.TestCase):
         self.assertNotIn("tests/", " ".join(roots))
 
 
+class RoleScopedWriteTests(unittest.TestCase):
+    """The test file and the implementation have different authors.
+
+    A tester who can also write the implementation writes tests for whatever
+    it built; a developer who can also edit the tests can edit them into
+    passing. Both are the same failure — the spec and the thing that meets it
+    are written by the same hand — and `--role` is what stops it, because it
+    reuses the audited-write-scope layer that already exists rather than
+    asking anyone to be careful.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        write_tree(self.repo, CONTRACTS, MODULES)
+        for name in MODULES:
+            (self.repo / "modules" / name).mkdir(parents=True, exist_ok=True)
+        (self.repo / "docs" / "implement").mkdir(parents=True, exist_ok=True)
+        (self.repo / "tests").mkdir(parents=True, exist_ok=True)
+        _git(self.repo, "init", "-q")
+        _git(self.repo, "config", "user.email", "test@example.com")
+        _git(self.repo, "config", "user.name", "test")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-qm", "baseline")
+        self.arch = loader.load(self.repo)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write(self, rel: str) -> None:
+        target = self.repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# new\n", encoding="utf-8")
+
+    def _audit(self, role: str | None):
+        return audit(
+            "market-data", "series.get", repo=self.repo, arch=self.arch, role=role
+        )
+
+    def test_the_developer_may_not_write_the_tests(self) -> None:
+        """The whole point: the implementer cannot edit the spec it is held to."""
+        self._write(naming.test_rel_path("market-data", "series.get"))
+        findings = self._audit("developer")
+        self.assertEqual({f.code for f in findings}, {"SCOPE_VIOLATION"})
+        self.assertIn("test_market_data_series_get", findings[0].path)
+
+    def test_the_developer_may_write_the_implementation(self) -> None:
+        self._write("modules/market-data/series.py")
+        self.assertEqual(self._audit("developer"), [])
+
+    def test_the_tester_may_not_write_the_implementation(self) -> None:
+        """The tester writing code is how the tests start describing the code."""
+        self._write("modules/market-data/series.py")
+        findings = self._audit("tester")
+        self.assertEqual({f.code for f in findings}, {"SCOPE_VIOLATION"})
+
+    def test_the_tester_may_write_the_tests_and_its_own_records(self) -> None:
+        self._write(naming.test_rel_path("market-data", "series.get"))
+        self._write("docs/implement/market-data/series.get.tests.md")
+        self.assertEqual(self._audit("tester"), [])
+
+    def test_either_role_may_not_reach_an_others_module(self) -> None:
+        self._write("modules/pricing/position.py")
+        for role in ("tester", "developer"):
+            self.assertEqual({f.code for f in self._audit(role)}, {"SCOPE_VIOLATION"})
+
+    def test_no_role_allows_both_halves(self) -> None:
+        """The union is the ad-hoc default, and no single role may be it."""
+        self._write(naming.test_rel_path("market-data", "series.get"))
+        self._write("modules/market-data/series.py")
+        for role in ("tester", "developer"):
+            self.assertEqual(len(self._audit(role)), 1, role)
+        self.assertEqual(self._audit(None), [])
+
+    def test_an_unknown_role_is_refused_rather_than_defaulted(self) -> None:
+        """Defaulting an unrecognised role to the union would open both halves."""
+        with self.assertRaises(ValueError):
+            allowed_roots("market-data", "series.get", self.arch, "reviewer")
+
+
 class HyphenatedModuleDottedCapabilityTests(unittest.TestCase):
     """The naming rule against names that actually occur.
 

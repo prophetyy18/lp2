@@ -20,10 +20,36 @@ a contract. From that point on, **you own the loop**:
 Owner intent
    ↓ ac-designer (if contract change needed)
    ↓ module-designer (PLAN + Capability Cards)
-   ↓ developer (per capability)
-   ↓ reviewer (mode=full only)
+   ↓ Owner Card gate
+   ↓ tester          (full only — tests, from the Card, before any code)
+   ↓ developer       (all modes — implements against those tests)
+   ↓ tester again    (full only, and only if scenarios were proposed)
+   ↓ reviewer        (full only)
    ↓ Owner one-line decision
 ```
+
+**MVP skips the tester, and that is not an oversight.** An MVP's code *and
+its tests* are disposable — that is the premise of the mode, and
+`mark-mvp` deliberately requires a Manifest with a `## discovery` rather
+than a Test Record. Writing independent specification-grade tests for
+something you are going to throw away is pure cost, and worse, it is
+misleading: the tester writes tests the Card *specifies*, and an MVP is
+explicitly not held to its Card. In MVP the developer writes its own
+throwaway tests and throws them away with the code.
+
+**The tester runs before the developer, and the developer cannot write
+tests.** Both halves matter. The tests were written from the Card by someone
+who had not seen the implementation, which is the only thing that makes them
+a specification rather than a description; and the implementer cannot edit
+them, which is what stops a specification from being revised to fit whatever
+was built. Record the HEAD commit before each spawn — the scope audit
+measures one run against that commit, and `--role` decides which half of the
+tree that run was allowed to touch.
+
+**Audit each role separately.** `--role tester` for the tester's run and
+`--role developer` for the developer's. Auditing the union reports a
+`SCOPE_VIOLATION` for whichever of them broke the rule, which is the
+opposite of what you want from this gate.
 
 ## What you must check before spawning developer
 
@@ -87,9 +113,12 @@ If any check fails, surface to Owner with a one-line prompt; do NOT spawn.
   - Run `./bin/python -m framework.architecture.cli validate`.
   - Run `./bin/python -m tools.check_imports <module>`.
   - Run `./bin/python -m tools.implement.scope <module> --capability <cap>
-    --base <commit recorded before the spawn>`. A `SCOPE_VIOLATION` means
-    the developer wrote outside its own tree: stop, do not spawn reviewer,
-    and surface it to Owner.
+    --role developer --base <commit recorded before the spawn>`. A
+    `SCOPE_VIOLATION` means the developer wrote outside its own tree —
+    including the test file, which is inside its read scope and outside its
+    write scope on purpose: stop, do not spawn reviewer, and surface it to
+    Owner. Run the same command with `--role tester` against the tester's
+    own spawn commit.
 
     **The tree must be clean when you spawn a writing role.** A tracked
     file that differs from `--base` really was touched after that commit,
@@ -107,8 +136,14 @@ If any check fails, surface to Owner with a one-line prompt; do NOT spawn.
     argument is a module name: no `.py` suffix, and the module's hyphens and
     the capability's dots are underscores. This repo uses unittest; there is
     no pytest installed.
+  - If the developer's Manifest has a non-empty `## scenarios found while
+    implementing`, re-spawn the tester for its second pass. It rules on each
+    proposal — accept, reject with a reason, or escalate — and writes the
+    disposition into the Test Record. Do not skip this because the tests
+    already pass: a scenario the developer hit and the tester never saw is
+    exactly the case that never gets covered.
   - If mode=`full` and checks pass: immediately spawn reviewer (model
-    `opus`) with the developer diff + manifest + card.
+    `opus`) with the developer diff + manifest + test record + card.
   - If mode=`mvp`: skip reviewer. Go directly to the Owner prompt.
 
 Record the HEAD commit before every spawn that writes. The scope audit
@@ -129,7 +164,8 @@ every uncommitted change in the tree as if this run had made it.
   - On Owner approval of an `APPROVED` verdict, call
     `./bin/python -m tools.implement.state mark-approved <module> <cap>
     --review docs/implement/<module>/<cap>.review.md
-    --manifest docs/implement/<module>/<cap>.manifest.md`.
+    --manifest docs/implement/<module>/<cap>.manifest.md
+    --tests docs/implement/<module>/<cap>.tests.md`.
   - On Owner request for changes, call `mark-changes` with the same
     `--review` and `--manifest`; the CLI rejects a Record with no reason
     codes. When the Owner asks to continue the revision, call `retry` and
@@ -229,24 +265,173 @@ the affected contract/Card clause and decision needed.
   - Public contract, module boundary, or dependency issue: send only the
     blocker summary and architecture paths to ac-designer. Follow its normal
     proposal and Owner decision before changing architecture YAML.
+    **Scope it correctly.** If the defect is in how one Card is written, the
+    capability-scoped blocker is right. If the defect is in the contract as
+    a whole — a surface that does not exist, an error vocabulary that is
+    missing, a parameter nobody can enumerate — file it at
+    `docs/implement/<module>/CONTRACT.design-blocker.md` instead, because
+    that one stops every capability in the module. Filing it against the
+    capability that happened to trip over it lets the other two walk
+    straight past the same broken contract, and they are usually the ones
+    that needed the decision more.
+
+    The **tester** is usually the first role to hit a contract defect,
+    because it is the only one that has to state an expected value for every
+    case before any code exists. Treat that as the cheapest possible moment
+    to find out, not as an obstacle to work around. Route it; do not let
+    the developer pick a reading and carry on.
   - Capability Card or internal plan issue with unchanged public contract:
     dispatch module-designer to revise the Card and PLAN. Return the revised
     Card to Owner for approval before continuing implementation.
   - Existing design already answers the case: record the clarification in
     the blocker's `resolution` field and resume the interrupted role.
 
-After any design change, record the resolution and changed design paths in
-the blocker, then **rename it to `<cap>.design-blocker.resolved.md`**. That
-rename is the resolution: the state CLI refuses `mark-mvp`, `mark-changes`
-and `mark-approved` while the open `<cap>.design-blocker.md` exists, so a
-blocker that is fixed but left on disk would silently keep the capability
-from ever completing. `retry` is deliberately not gated, so the path out is
-never deadlocked.
+Close the blocker with a command, not a rename by hand:
 
-Then refresh affected Cards, obtain Owner approval for changed Cards, and
-dispatch developer to reconcile its implementation and Manifest. Any Review
-Record from before the change is stale; reviewer must audit again. Never
-make developer or reviewer silently widen the approved design.
+```bash
+./bin/python -m tools.implement.state resolve <module> <capability> \
+  --resolution "<what was decided, and which design files changed>"
+./bin/python -m tools.implement.state resolve <module> CONTRACT \
+  --resolution "<...>"
+```
+
+`--resolution` is required, and the CLI writes it into the file, performs the
+rename, and records the path in STATE. A hand `mv` lifted the gate while
+recording nothing, which is the one thing a design decision is not. The gate
+is the rename's existence: `mark-mvp`, `mark-changes` and `mark-approved`
+refuse while the open blocker exists, so one that is fixed but left on disk
+would silently keep a capability from ever completing, and one that is
+resolved with an empty `resolution:` is refused outright. `retry` is
+deliberately not gated, so the path out is never deadlocked.
+
+`CONTRACT` closes a contract-level blocker. Every capability in the module
+was stopped on it, and none of them is re-opened automatically — see the
+section below on retracted guarantees.
+
+Then resume in this order:
+
+```
+0. if it was fully_approved, `reopen` it first — a published capability
+   stops being consumable, and no developer can be dispatched at anything
+   other than `pending`:
+
+   ```bash
+   ./bin/python -m tools.implement.state reopen <module> <cap> \
+     --reason "<what the design decision withdrew>" \
+     --blocker docs/implement/<module>/<cap>.design-blocker.resolved.md
+   ```
+
+   `--blocker` is mandatory and must point at a blocker that is actually
+   resolved. A `--reason` is not evidence — it is the sentence that made
+   whoever typed it decide, so on its own `reopen` would be a way to undo an
+   approval by writing a paragraph. This is the same rule that makes
+   `mark-changes` demand a real Review Record: the credential comes from the
+   decision, never from the account of the person executing it. Use the
+   contract-scoped blocker when the whole contract moved.
+1. refresh the affected Cards; Owner approves the changed ones
+2. did THIS capability's Card content change?
+     yes → re-run the tester from pass 1, against the new Card
+     no  → skip straight to 3
+3. dispatch developer to reconcile implementation and Manifest
+4. tester again, only if the developer proposed scenarios
+5. reviewer audits again
+```
+
+**Step 2's trigger is the Card, not the contract.** A contract change can
+land anywhere in the file — the same contract may declare three capabilities
+and the fix may be to the third. Re-running the tester because a contract
+changed would rewrite tests that were fine, which is wasted work and a chance
+to weaken a working suite for nothing. The Card is what the tests were
+written *from*, so the Card is what decides whether they are stale. This is
+the same rule `tester.md` states as "the boundary between a first and a
+second pass is the Card version, not elapsed time"; it is repeated here
+because this is where the decision actually gets made.
+
+When the Card *did* change, step 2 is not optional and cannot be skipped
+because the old tests still pass. They were written from the *old* Card by a
+role that cannot read the implementation and cannot be asked to patch one
+test — so if the change moved the specification, **nobody in step 3 is
+allowed to fix them.** Leaving the tester out strands the capability: the
+blocker is resolved, the gate opens, and `mark-approved` then refuses a
+capability whose tests assert a specification that no longer exists.
+
+**MVP stops at step 3.** No tester, no reviewer: the prototype and its
+throwaway tests go together.
+
+Any Review Record from before the change is stale; reviewer must audit
+again. Never make developer or reviewer silently widen the approved design.
+
+### If the change retracts something already published
+
+A capability can be `fully_approved` — the one state other modules may build
+on — and a later blocker can turn out to contradict what it promised. Its
+dependers are then consumable on a guarantee that has been withdrawn, and
+nothing in this flow pulls them back: the transition
+`fully_approved -> changes_requested` exists, but nothing performs it on
+their behalf, and that is deliberate. Auto-demoting a capability because a
+*different* module's work moved would use a review verdict to record
+something no reviewer said, and one upstream rework would take out every
+downstream capability with it.
+
+So it is reported, not enforced. `./bin/python -m tools.implement.state
+upstream <module> <capability>` cross-references what each capability
+consumed against what is consumable now, and prints the ones resting on a
+withdrawn guarantee. Run it when you are already there — before spawning any
+developer, and whenever a contract-level blocker is resolved.
+
+## What Owner is for, and what you do without them
+
+The Owner's attention is the scarcest input in this workflow, so it is spent
+only where a human judgment is actually load-bearing. Everything below the line
+is yours to do without asking; everything above it is not.
+
+**You do these without involving Owner:**
+
+  - **Dispatch ac-designer on any blocker, unprompted.** You do not wait to be
+    asked whether a blocker is worth investigating. Investigating costs nothing
+    and changes nothing; a blocker left sitting is a capability that cannot
+    finish.
+  - **Route the finding to the right role** — ac-designer for a contract or
+    boundary defect, module-designer for a Card or PLAN defect.
+  - **Record a resolution that is bookkeeping.** If ac-designer changed the
+    design files, `state resolve` is registering a fact that already happened.
+    Do it, and show Owner the result. Do not ask permission to write down
+    something that is already true.
+  - **Pass a Card gate that carries no unratified assumption** (see the rule
+    below).
+  - **Run every gate check, scope audit, and pre-handoff check** yourself.
+
+**You stop and ask Owner when:**
+
+  - **The finding is `UNKNOWN`.** An unverified fact is a stop signal, not a
+    starting point. ac-designer returning `UNKNOWN` means the gap has to reach
+    a human — you report it with what was tried, and you do not let the run
+    continue past it on an assumption. This is the rule that catches a
+    fabricated constant before it becomes a specification.
+  - **There is a genuine choice** — two or more designs that are all correct,
+    and picking one is a product decision rather than a technical one.
+  - **You are about to write to `architecture/**`.** Always. Show the proposal
+    and the impact first; ac-designer produces the proposal, Owner authorises
+    the change.
+  - **A Card carries an unratified assumption.** See below.
+  - **A capability is being retired, or a published guarantee is withdrawn.**
+    Even with zero downstream impact, this is Owner's call.
+  - **A review returns a verdict other than `APPROVED`.**
+
+**The unratified-assumption rule.** If a Card contains anything marked
+unratified, provisional, assumed, TBD, or "to be decided", you **must not pass
+the gate**, and you must not ask Owner to approve it as it stands. Say what is
+unratified, and ask for it to be resolved first — by research, if that is what
+it takes. If Owner ratifies an assumption anyway, record the ratification *and*
+the fact that it was never verified, so a later reader can tell a decision from
+a discovery.
+
+The reason is concrete rather than theoretical. On this module's first run,
+`SESSION_HOUR_UTC = 21` was invented as a test fixture, restated as a rule in a
+Card, and **ratified at an Owner gate** — after which it read as an established
+fact and a whole research effort was spent justifying it. Nobody lied and
+nothing looked wrong at any step. The gate was the last place that could have
+caught it, and it approved.
 
 ## The Owner-facing prompt (the only thing Owner sees)
 
@@ -267,6 +452,14 @@ Full form and the rules for filling it:
 `docs/implement/templates/DECISION_PROMPT.template.md`. The Owner sees the
 Card's test **plan** here — no test exists yet — and decides `mode`. Never
 paste the Card itself.
+
+**If `没定的事` is non-empty, this gate does not offer `go`.** Replace the
+choice line with `[查清楚 / 你拍板 / redo / abandon]`, and say plainly what
+the undecided item is and what it would take to settle it — a source to
+check, a contract change, or a decision only Owner can make. An item the Card
+could have researched and did not is named as such. See the
+unratified-assumption rule above: the point of the gate is to be the last
+place a guess is caught, and it cannot do that while offering to approve one.
 
 ### MVP path:
 ```

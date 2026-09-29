@@ -14,6 +14,21 @@ This CLI compares the working tree against the module's allowed write roots:
                                         (hyphens and dots become underscores;
                                          see tools/implement/naming.py)
 
+`--role` narrows that to one role's share, because the test file and the
+implementation have different authors:
+
+  --role tester      the test file and this capability's records. No source:
+                     the tester must not be able to write the thing it is
+                     testing, or the tests certify whatever the implementation
+                     happened to do.
+  --role developer   the module source and this capability's records. No test
+                     file: the tests are written from the Card, and letting
+                     the implementer edit them makes every test a thing that
+                     can be edited into passing.
+
+The default is the union, which is the right answer only for an ad-hoc run
+with no role in mind.
+
 Anything else that is modified, added, or staged is a SCOPE_VIOLATION. Note
 what is deliberately NOT allowed: a declared upstream's granted public
 surface is readable, but never writable. Granting `modules/<upstream>/api/**`
@@ -90,33 +105,49 @@ def touched_files(repo: Path, base: str = "HEAD") -> list[tuple[str, str]]:
     return sorted(out)
 
 
+ROLES = ("tester", "developer")
+
+
 def allowed_roots(
     module: str,
     capability: str | None,
     arch: Architecture | None,
+    role: str | None = None,
 ) -> list[tuple[str, str]]:
-    """(prefix, why) pairs this module may write under."""
+    """(prefix, why) pairs this module may write under.
+
+    `role` selects one author's share of the tree; without it every role's
+    share is allowed, which is only meaningful for an ad-hoc run.
+    """
+    if role is not None and role not in ROLES:
+        raise ValueError(f"unknown role {role!r}; expected one of {ROLES}")
     own = f"modules/{module}"
     if arch is not None:
         declared = arch.modules.get(module)
         if declared is not None:
             own = declared.path.rstrip("/")
-    roots = [
-        (own + "/", "own module implementation"),
-        (f"docs/implement/{module}/", "own capability cards and records"),
-    ]
-    if capability:
-        # Not `tests/test_{module}_{capability}`: module names are hyphenated
-        # and capability ids are dotted, so that string names a file nobody
-        # can write and the developer's own test read as a violation. Both
-        # sides are translated in one place, which is the only reason the
-        # audit and the role prompts can be expected to agree.
-        roots.append(
-            (
-                naming.test_path_prefix(module, capability),
-                "own tests for this capability",
-            )
+    records = (f"docs/implement/{module}/", "own capability cards and records")
+    # Not `tests/test_{module}_{capability}`: module names are hyphenated
+    # and capability ids are dotted, so that string names a file nobody can
+    # write and a legitimate test read as a violation. Both sides are
+    # translated in one place, which is the only reason the audit and the
+    # role prompts can be expected to agree.
+    tests = (
+        (
+            naming.test_path_prefix(module, capability),
+            "own tests for this capability",
         )
+        if capability
+        else None
+    )
+    source = (own + "/", "own module implementation")
+
+    if role == "tester":
+        roots = [records] + ([tests] if tests else [])
+    elif role == "developer":
+        roots = [source, records]
+    else:
+        roots = [source, records] + ([tests] if tests else [])
     return roots
 
 
@@ -126,11 +157,12 @@ def audit(
     repo: Path | None = None,
     arch: Architecture | None = None,
     base: str = "HEAD",
+    role: str | None = None,
 ) -> list[ScopeFinding]:
     repo = repo or Path.cwd()
     if arch is None:
         arch = load_arch(repo)
-    roots = allowed_roots(module, capability, arch)
+    roots = allowed_roots(module, capability, arch, role)
     out: list[ScopeFinding] = []
     for path, how in touched_files(repo, base):
         hit = next((why for prefix, why in roots if path.startswith(prefix)), None)
@@ -168,6 +200,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="narrow the test allow-list to this capability",
     )
     p.add_argument(
+        "--role",
+        choices=ROLES,
+        default=None,
+        help=(
+            "audit one author's share: 'tester' may write the test file but "
+            "not the source, 'developer' the reverse. Omit for the union."
+        ),
+    )
+    p.add_argument(
         "--base",
         default="HEAD",
         help="commit the run started from (default HEAD; record it before spawning)",
@@ -179,7 +220,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        findings = audit(args.module, args.capability or None, base=args.base)
+        findings = audit(
+            args.module,
+            args.capability or None,
+            base=args.base,
+            role=args.role,
+        )
     except RuntimeError as exc:
         print(f"SCOPE_ERROR: {exc}", file=sys.stderr)
         return 2

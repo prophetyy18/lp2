@@ -40,6 +40,12 @@ from tools.implement.errors import StateError
 
 STATE_ROOT = Path("docs/implement")
 
+# The pseudo-capability a contract-level design blocker hangs off. Not a
+# capability id -- it has no `provides` entry and is never registered -- but
+# it needs a path that cannot collide with one, and reusing the artifact
+# naming keeps the two scopes shaped identically.
+CONTRACT_SCOPE = "CONTRACT"
+
 # Repo-relative root that architecture/, modules/ and tests/ hang off.
 # Separate from STATE_ROOT because they are different trees, and a constant
 # rather than an argument so the artifact checks stay pure w.r.t. the state.
@@ -61,18 +67,27 @@ VALID_STATES: tuple[str, ...] = (
 _ALLOWED: dict[str, frozenset[str]] = {
     "pending": frozenset({"mvp_developed", "fully_approved", "changes_requested", "abandoned"}),
     "mvp_developed": frozenset({"pending", "abandoned"}),
-    "fully_approved": frozenset({"changes_requested", "abandoned"}),
+    # `pending` is reachable only through `reopen`, and only with evidence that
+    # the design actually changed. It is not reachable through `retry`: a
+    # design change is nobody's review verdict, and routing it through
+    # mark-changes would be the same error the upstream-regression report
+    # deliberately avoids -- recording one module's rework as another role's
+    # rejection.
+    "fully_approved": frozenset({"changes_requested", "abandoned", "pending"}),
     "changes_requested": frozenset({"pending", "abandoned"}),
     "abandoned": frozenset(),
 }
 
-# Mode rules per transition. ``None`` means the command does not constrain mode.
-_MODE_RULES: dict[str, str | None] = {
-    "mark_mvp": "mvp",
-    "mark_changes": None,
-    "mark_approved": None,
-    "abandon": None,
-}
+# Which states each command may act on. `_ALLOWED` is the graph; this says
+# who is allowed to walk which edge, and it has to exist separately because
+# the graph cannot tell two edges to `pending` apart. `retry` means "a
+# reviewer rejected this" and its whole value is that a rejection is always a
+# rejection. `reopen` means "the design under this changed". Both land on
+# `pending`; if either could be walked from either state, a design change
+# could be recorded as a review verdict and a rejection could be recorded as
+# a design change.
+_RETRYABLE: frozenset[str] = frozenset({"changes_requested", "mvp_developed"})
+_REOPENABLE: frozenset[str] = frozenset({"fully_approved"})
 
 
 class CapabilityState(str, Enum):
@@ -106,7 +121,10 @@ class CapabilityRecord:
     mvp_at: str = ""
     approved_at: str = ""
     manifest: str = ""
+    tests: str = ""
     review: str = ""
+    blocker: str = ""
+    consumes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"state": self.state, "mode": self.mode}
@@ -116,8 +134,14 @@ class CapabilityRecord:
             out["approved_at"] = self.approved_at
         if self.manifest:
             out["manifest"] = self.manifest
+        if self.tests:
+            out["tests"] = self.tests
         if self.review:
             out["review"] = self.review
+        if self.blocker:
+            out["blocker"] = self.blocker
+        if self.consumes:
+            out["consumes"] = list(self.consumes)
         return out
 
     @classmethod
@@ -128,7 +152,10 @@ class CapabilityRecord:
             mvp_at=str(data.get("mvp_at", "")),
             approved_at=str(data.get("approved_at", "")),
             manifest=str(data.get("manifest", "")),
+            tests=str(data.get("tests", "")),
             review=str(data.get("review", "")),
+            blocker=str(data.get("blocker", "")),
+            consumes=[str(c) for c in (data.get("consumes") or [])],
         )
 
 
@@ -198,7 +225,9 @@ def save_state(record: ModuleRecord, root: Path | None = None) -> Path:
     return path
 
 
-def compute_module_state(records: Iterable[CapabilityRecord]) -> str:
+def compute_module_state(
+    records: Iterable[CapabilityRecord], unregistered: Iterable[str] = ()
+) -> str:
     """Aggregate capability states into one module_state string.
 
     Three outcomes, and every one of them is a question about *work*, never
@@ -211,6 +240,15 @@ def compute_module_state(records: Iterable[CapabilityRecord]) -> str:
       not_started  nothing has been worked on (all pending, or none declared)
       in_progress  everything else: work has started and has not landed
 
+    `unregistered` is the set of capabilities the contract declares and
+    STATE.yaml has never heard of. It counts as pending, because a
+    capability nobody has registered is work nobody has done -- and leaving
+    it out is how a module with one approved capability out of three reported
+    `complete`. Observed on the first end-to-end run, which is exactly the
+    moment it should have been caught: `market-data` had one of its three
+    capabilities `fully_approved` and printed `complete`, because the other
+    two were invisible to a function that only ever saw STATE.yaml.
+
     A module whose capabilities were all abandoned reports `in_progress`:
     three values cannot also say "started and then deliberately closed", and
     `in_progress` at least records that it was touched. Adding a capability
@@ -218,6 +256,8 @@ def compute_module_state(records: Iterable[CapabilityRecord]) -> str:
     intended ratchet -- the new work is genuinely outstanding.
     """
     states = {r.state for r in records}
+    if unregistered:
+        states.add(CapabilityState.PENDING.value)
     if not states or states == {CapabilityState.PENDING.value}:
         # nothing declared, or nothing built yet
         return ModuleState.NOT_STARTED.value
@@ -365,32 +405,52 @@ def _test_obligations(cap: Any) -> dict[str, str]:
     """What the contract itself demands a test for, keyed by obligation.
 
     Every error code is a promise to a consumer that this failure is
-    reported rather than raised as something else, and `idempotent` /
-    `ordering` are guarantees a caller will rely on. All of it is already
-    machine-readable in the contract YAML, and the MVP path had learned this
-    the hard way -- the discovery template's own worked example is "3 of the
-    4 declared error codes are unimplemented". The full path is the only one
-    another module may consume, so it is the one that has to carry the
-    lesson.
+    reported rather than raised as something else, and every `behavior`
+    guarantee is a promise about what a consumer may assume. All of it is
+    already machine-readable in the contract YAML, and the MVP path had
+    learned this the hard way -- the discovery template's own worked example
+    is "3 of the 4 declared error codes are unimplemented". The full path is
+    the only one another module may consume, so it is the one that has to
+    carry the lesson.
 
-    Empty for a capability that declares no errors and no behavior guarantee,
-    which is most of a base module; the check is then vacuous, not absent.
+    **Derived from what the contract declares, not from a hand-picked list.**
+    It used to name `idempotent` and `ordering` and ignore `unit`, `time` and
+    `stale_tolerance` -- so those three were decoration, and a contract could
+    declare fourteen `unit: decimal` guarantees across four capabilities that
+    nothing would ever check. Two of five fields had a reader and three did
+    not, which made `behavior` 60% decorative, and adding a field to it added
+    a fourth unread one. Deriving the list means a field is either enforced
+    or it should not exist.
+
+    What earns an obligation is a *guarantee*, so the negative and
+    unspecified values do not: `idempotent: false` promises nothing to test,
+    and neither does an absent `unit`. `stale_tolerance` is free text and no
+    test name can be derived from it, so it is the one field with no
+    obligation; it is called out here rather than left as a silent gap.
+
+    Empty for a capability that declares no errors and no behavior, which is
+    most of a base module; the check is then vacuous, not absent.
     """
     obligations: dict[str, str] = {e.code: f"error code {e.code}" for e in cap.errors}
     behavior = cap.behavior
-    if behavior is not None:
-        # `idempotent` is Optional, and None means "not specified" rather
-        # than False -- a capability that says nothing is not promising to
-        # be non-idempotent, so it earns no obligation.
-        if behavior.idempotent is True:
-            obligations["idempotent"] = "behavior.idempotent: true"
-        if behavior.ordering in ("total", "partial"):
-            obligations["ordering"] = f"behavior.ordering: {behavior.ordering}"
+    if behavior is None:
+        return obligations
+    for field_name in ("unit", "time", "timezone"):
+        value = getattr(behavior, field_name, "")
+        if value:
+            obligations[field_name] = f"behavior.{field_name}: {value}"
+    # `idempotent` is Optional, and None means "not specified" rather than
+    # False -- a capability that says nothing is not promising to be
+    # non-idempotent, so it earns no obligation.
+    if behavior.idempotent is True:
+        obligations["idempotent"] = "behavior.idempotent: true"
+    if behavior.ordering in ("total", "partial"):
+        obligations["ordering"] = f"behavior.ordering: {behavior.ordering}"
     return obligations
 
 
-def _obligation_block(manifest: str) -> dict[str, str] | None:
-    """Parse the Manifest's `tests by obligation:` mapping, or None.
+def _obligation_block(record: str) -> dict[str, str] | None:
+    """Parse a Test Record's `tests by obligation:` mapping, or None.
 
     A mapping rather than a count, because a count cannot say *which*
     failure a test covers, and the failure this exists to catch is precisely
@@ -399,7 +459,7 @@ def _obligation_block(manifest: str) -> dict[str, str] | None:
     `cap.errors` has written a better test than one who pastes the literal,
     and refusing that would train people into the worse habit.
     """
-    lines = manifest.splitlines()
+    lines = record.splitlines()
     for index, line in enumerate(lines):
         if not re.match(r"^-\s*tests by obligation:\s*$", line):
             continue
@@ -414,19 +474,25 @@ def _obligation_block(manifest: str) -> dict[str, str] | None:
 
 
 def _require_obligations_tested(
-    module: str, capability: str, manifest: str
+    module: str, capability: str, record: str
 ) -> list[str]:
     """Every guarantee the contract declares must be claimed by a named test.
 
-    And the named test must exist. A mapping the developer wrote but did not
-    honour is the failure mode a count cannot see, and it is the one an
-    agent under pressure to reach a gate produces.
+    And the named test must exist. A mapping the tester wrote but did not
+    honour is the failure mode a count cannot see.
 
-    The honest limit: this reads three artifacts -- contract, Manifest, test
-    file -- so an agent that writes all three consistently but tests nothing
-    still passes. What it rules out is the specific, common, and previously
-    invisible case of a capability whose declared error surface is partly
-    untested, and where the Manifest quietly says otherwise.
+    The mapping is read from the *Tester's* Test Record, not the developer's
+    Manifest. It used to live in the Manifest, which meant the implementer
+    was signing a statement about test coverage for code it had just written
+    -- the same self-certification `_require_work_exists` is built to refuse.
+    Asking the party that did not write the code, and did not write the
+    tests' expectations from the code, is the whole point of having a tester.
+
+    The honest limit: this reads three artifacts -- contract, Test Record,
+    test file -- so an agent that writes all three consistently but tests
+    nothing still passes. What it rules out is the specific, common, and
+    previously invisible case of a capability whose declared error surface
+    is partly untested, and where the record quietly says otherwise.
     """
     cap = _capability_defs(module, capability)
     if cap is None:
@@ -437,19 +503,19 @@ def _require_obligations_tested(
     obligations = _test_obligations(cap)
     if not obligations:
         return []
-    claimed = _obligation_block(manifest)
+    claimed = _obligation_block(record)
     if claimed is None:
         raise StateError(
             f"{module} / {capability} declares "
             f"{len(obligations)} guarantee(s) that need a test -- "
             + ", ".join(sorted(obligations))
-            + f" -- but the Manifest carries no `tests by obligation:` block. "
+            + f" -- but the Test Record carries no `tests by obligation:` block. "
             f"Map each one to a test method that covers it."
         )
     unknown = sorted(set(claimed) - set(obligations))
     if unknown:
         raise StateError(
-            f"Manifest for {module} / {capability} claims obligation(s) "
+            f"Test Record for {module} / {capability} claims obligation(s) "
             f"{unknown} the contract does not declare; the contract declares "
             f"{sorted(obligations)}"
         )
@@ -477,7 +543,7 @@ def _require_obligations_tested(
     ]
     if unfulfilled:
         raise StateError(
-            f"{test_file} has no test method for {unfulfilled}. The Manifest "
+            f"{test_file} has no test method for {unfulfilled}. The Test Record "
             f"maps a guarantee to a test that is not there."
         )
     return sorted(obligations)
@@ -535,6 +601,38 @@ def _module_source(module: str) -> Path:
     if not isinstance(source, str) or not source:
         raise StateError(f"{path} declares no `source:` root to check")
     return REPO_ROOT / source
+
+
+def _contract_capabilities(arch: Architecture, module: str) -> set[str]:
+    """Every capability the architecture says this module owns.
+
+    The complement of STATE.yaml's rows, and the reason `state show` cannot
+    trust them alone: STATE only ever learns about a capability when someone
+    registers it, so a contract capability that nobody has reached yet is
+    invisible to a function that reads only the file.
+    """
+    mod = arch.modules.get(module)
+    if mod is None:
+        return set()
+    caps: set[str] = set()
+    for name in mod.owns_contracts:
+        caps.update(arch.contract(name).capability_ids())
+    return caps
+
+
+def _consumed_upstreams(manifest: str) -> list[str]:
+    """The capability ids this implementation was built against.
+
+    Read from the Manifest's machine-readable `upstream consumed:` line. It
+    is what makes a *retracted* guarantee visible after the fact: the
+    upstream gate answers "may I start", and it can only see the module's
+    whole declared `uses` set. This answers "what was this approved thing
+    actually standing on", which is the question nobody could ask before.
+    """
+    match = re.search(r"^-\s*upstream consumed:\s*\[(.*?)\]\s*$", manifest, re.MULTILINE)
+    if not match:
+        return []
+    return [c.strip() for c in match.group(1).split(",") if c.strip()]
 
 
 def _require_work_exists(module: str) -> None:
@@ -601,6 +699,33 @@ def _require_review_after_manifest(review: str, manifest: str) -> None:
         )
 
 
+def _require_resolution_recorded(path: Path) -> None:
+    """A resolved blocker must say what was decided, not just that it ended.
+
+    Resolution was a rename and nothing else, so `mv x.design-blocker.md
+    x.design-blocker.resolved.md` lifted the gate while writing down
+    nothing. The rename is the recorded act; the sentence next to it is what
+    makes it worth reading a month later, and the template has always asked
+    for one.
+    """
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in content.splitlines():
+        match = re.match(r"^-\s*resolution:\s*(.*)$", line)
+        if match:
+            if match.group(1).strip() and match.group(1).strip() not in ("-", "<", "<...>"):
+                return
+            break
+    raise StateError(
+        f"{path.name} carries no resolution. Renaming a blocker is how the gate "
+        f"lifts, so an empty `- resolution:` records that a design question was "
+        f"closed without recording what closed it. Fill in the decision and the "
+        f"design files that changed, then re-run."
+    )
+
+
 def _refuse_if_blocked(module: str, capability: str, root: Path, command: str) -> None:
     """Refuse a gate transition while a design blocker for it is still open.
 
@@ -609,10 +734,43 @@ def _refuse_if_blocked(module: str, capability: str, root: Path, command: str) -
     right, but it also meant nothing stopped a stale blocker from coexisting
     with `fully_approved`. The blocker file is the only record there is, so
     the file is what the gate checks.
+
+    Two scopes, because a contract defect belongs to no single capability and
+    a capability-scoped-only gate let the rest of the module walk straight
+    past it. `market-data` was the demonstration: a blocker filed against
+    `series.symbols` -- the capability that tripped over the missing
+    ingestion surface -- gates only `series.symbols`, while `series.get` and
+    `series.calendar` carry on building on the same broken contract. And they
+    are the two that actually consume bars, so they are the two that needed
+    the decision most. A contract-level defect now stops the whole module.
+
+    Which scope a defect belongs to is the dispatcher's call to route, and the
+    rule is simple: "how this Card is written" is capability-scoped; "the
+    contract itself is wrong" is contract-scoped.
     """
+    contract_path = naming.artifact_path(root, module, CONTRACT_SCOPE, "design-blocker")
+    if contract_path.is_file():
+        _require_resolution_recorded(
+            naming.artifact_path(root, module, CONTRACT_SCOPE, "design-blocker.resolved")
+        )
+        raise StateError(
+            f"{command} refused for every capability of {module}: an open "
+            f"contract-level design blocker exists at {contract_path}. A defect "
+            f"in the contract belongs to no single capability, so gating only "
+            f"the one that found it lets the rest of the module build on the "
+            f"same broken design. Resolve it, record what changed, then rename "
+            f"the file to {contract_path.name.replace('.md', '.resolved.md')} "
+            f"and re-run."
+        )
     path = naming.artifact_path(root, module, capability, "design-blocker")
     if not path.is_file():
+        _require_resolution_recorded(
+            naming.artifact_path(root, module, capability, "design-blocker.resolved")
+        )
         return
+    _require_resolution_recorded(
+        naming.artifact_path(root, module, capability, "design-blocker.resolved")
+    )
     resolved = naming.artifact_path(root, module, capability, "design-blocker.resolved")
     raise StateError(
         f"{command} refused: an open design blocker exists at {path}. A design "
@@ -812,6 +970,14 @@ def cmd_retry(args: argparse.Namespace) -> int:
     """
     record = load_state(args.module, Path(args.root))
     rec = _get_cap(record, args.capability)
+    if rec.state not in _RETRYABLE:
+        raise StateError(
+            f"{args.module}/{args.capability} is {rec.state}; `retry` reopens "
+            f"work a reviewer rejected ({', '.join(sorted(_RETRYABLE))}). A "
+            f"published capability whose design changed is `reopen` — and it "
+            f"needs a reason and the resolved blocker, because taking back "
+            f"what other modules may build on is a design decision"
+        )
     _validate_transition(rec.state, "pending")
     archived = None
     if rec.state == "mvp_developed":
@@ -875,6 +1041,14 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
         args.manifest,
         f"# manifest: {args.module} / {args.capability}",
     )
+    test_record = _require_artifact(
+        args.module,
+        args.capability,
+        Path(args.root),
+        "tests",
+        args.tests,
+        f"# tests: {args.module} / {args.capability}",
+    )
     _require_work_exists(args.module)
     # The two checks below are the only ones in this CLI that read the
     # contract rather than a document, and they are here because
@@ -882,7 +1056,7 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
     # on: what a consumer is entitled to assume about this capability is
     # whatever the contract declares, and an untested error code is a broken
     # promise made to a module that has not been written yet.
-    _require_obligations_tested(args.module, args.capability, manifest)
+    _require_obligations_tested(args.module, args.capability, test_record)
     _require_review_after_manifest(args.review, args.manifest)
     content = _require_artifact(
         args.module,
@@ -903,6 +1077,10 @@ def cmd_mark_approved(args: argparse.Namespace) -> int:
     rec.review = str(Path(args.review))
     if not rec.manifest:
         rec.manifest = args.manifest
+    rec.tests = str(Path(args.tests))
+    consumed = _consumed_upstreams(manifest)
+    if consumed:
+        rec.consumes = consumed
     save_state(record, Path(args.root))
     _print(
         f"marked {args.module}/{args.capability} as fully_approved "
@@ -954,6 +1132,177 @@ def cmd_abandon(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_resolve(args: argparse.Namespace) -> int:
+    """Close a design blocker by recording the decision, then renaming it.
+
+    This was a manual `mv` by the dispatcher, and a manual `mv` records
+    nothing: the resolution is the sentence next to the rename, and nobody
+    was checking it. `mark-approved` now refuses a resolved blocker with an
+    empty `resolution:`, but a check that fires after the fact is a trap for
+    whoever tripped it -- so the decision is written here, once, by the
+    command that performs the rename, and the path is recorded in STATE so
+    "this capability went through a design change" survives the file.
+
+    `CONTRACT` resolves a contract-level blocker, which has no single
+    capability to attach to; it is left as the file, and `state show` names
+    it.
+    """
+    root = Path(args.root)
+    contract_scope = args.capability == CONTRACT_SCOPE
+    if contract_scope:
+        src = naming.artifact_path(root, args.module, CONTRACT_SCOPE, "design-blocker")
+    else:
+        _require_declared_capability(args.module, args.capability)
+        src = naming.artifact_path(root, args.module, args.capability, "design-blocker")
+    if not src.is_file():
+        raise StateError(
+            f"no open design blocker at {src}; nothing to resolve. A blocker "
+            f"is filed by the role that hit the problem and closed here, so "
+            f"that the decision survives the file."
+        )
+    decision = args.resolution.strip()
+    if not decision:
+        raise StateError(
+            f"--resolution is required. Renaming a blocker is what lifts the "
+            f"gate, so a rename with nothing next to it closes a design "
+            f"question without leaving a trace of what closed it."
+        )
+    dest = naming.artifact_path(
+        root, args.module, args.capability, "design-blocker.resolved"
+    )
+    if dest.is_file():
+        raise StateError(
+            f"{dest} already exists; a second resolution would overwrite the "
+            f"first one's reasoning. Read it first, move it aside if it is "
+            f"stale, then resolve again."
+        )
+    text = src.read_text(encoding="utf-8")
+    line = f"- resolution: {decision}"
+    if re.search(r"^-\s*resolution:", text, re.MULTILINE):
+        text = re.sub(r"^-\s*resolution:.*$", line, text, count=1, flags=re.MULTILINE)
+    else:
+        text = text.rstrip("\n") + "\n" + line + "\n"
+    src.write_text(text, encoding="utf-8")
+    src.rename(dest)
+
+    if contract_scope:
+        _print(
+            f"resolved the contract-level design blocker for {args.module}: "
+            f"{dest}. Every capability in the module was stopped on it and is "
+            f"unblocked now. Any capability already `fully_approved` on the "
+            f"old wording is NOT automatically re-opened — run "
+            f"`dependers-of` for each one you retracted and decide with Owner."
+        )
+        return 0
+    record = load_state(args.module, root)
+    rec = _get_cap(record, args.capability)
+    rec.blocker = str(dest)
+    save_state(record, root)
+    _print(
+        f"resolved the design blocker for {args.module}/{args.capability}: "
+        f"{dest}. The capability is no longer gated. If the resolution moved "
+        f"the design, re-run the tester against the revised Card before the "
+        f"developer reconciles — the old tests assert the old specification, "
+        f"and the developer is not allowed to change them."
+    )
+    return 0
+
+
+def _require_declared_capability(module: str, capability: str) -> None:
+    """Guard the resolve path against a typo creating an orphan file."""
+    arch = load_arch(REPO_ROOT)
+    found = _provider_of(arch, capability)
+    if found is None or found[0] != module:
+        raise StateError(
+            f"capability {capability!r} is not provided by module {module!r}; "
+            f"a design blocker can only be resolved for a declared capability, "
+            f"or for {CONTRACT_SCOPE} (a contract-level blocker)"
+        )
+
+
+def cmd_reopen(args: argparse.Namespace) -> int:
+    """Re-open an approved capability because the design under it changed.
+
+    `fully_approved` is the one state another module may build on, and it is
+    reachable in a loop: the upstream gate is checked once, at approval, and
+    a later design change can retract what was approved. The loop back to
+    `pending` therefore has to exist — and it is deliberately NOT `retry`,
+    which means "a reviewer rejected this". A design change is nobody's
+    review verdict, and `retry` requires a CHANGES_REQUESTED Record and its
+    reason codes precisely so that a rejection is always a rejection.
+
+    The evidence is a resolved design blocker, and it is mandatory. Re-opening
+    something other modules are consuming is a serious act, and the only thing
+    that makes it one is a design decision that actually happened. A `--reason`
+    typed by whoever wants the capability back is not evidence of anything, so
+    the blocker is what the command checks and the reason is what it records
+    for the next reader.
+    """
+    root = Path(args.root)
+    record = load_state(args.module, root)
+    rec = _get_cap(record, args.capability)
+    if rec.state not in _REOPENABLE:
+        raise StateError(
+            f"{args.module}/{args.capability} is {rec.state}, not fully_approved. "
+            f"reopen takes back a capability that was published; for one that "
+            f"owes work use `retry` — a reviewer rejection and a design change "
+            f"are different facts and land in different places"
+        )
+    _validate_transition(rec.state, "pending")
+    reason = args.reason.strip()
+    if not reason:
+        raise StateError(
+            f"--reason is required. Taking back a capability other modules may "
+            f"build on is a design decision, and this is the only record that "
+            f"one happened and what it was."
+        )
+    # The evidence is mandatory, and it is the whole reason this command is
+    # not "a way to undo an approval". A reason typed by whoever wants to
+    # take the capability back is not evidence of anything — it is the
+    # reason the sentence is still asked for, but the blocker is what proves
+    # a design decision actually happened. Same rule as mark-changes needing
+    # a real Review Record: the credential comes from the decision, never
+    # from the account of someone executing it.
+    if not args.blocker.strip():
+        raise StateError(
+            f"--blocker is required. Re-opening a capability other modules may "
+            f"build on is only legitimate when a design decision retracted "
+            f"something, and that decision is on record as a resolved design "
+            f"blocker. A reason alone would let anyone retake a published "
+            f"capability by typing a sentence."
+        )
+    resolved = naming.artifact_path(
+        root, args.module, args.capability, "design-blocker.resolved"
+    )
+    contract_resolved = naming.artifact_path(
+        root, args.module, CONTRACT_SCOPE, "design-blocker.resolved"
+    )
+    if not resolved.is_file() and not contract_resolved.is_file():
+        raise StateError(
+            f"--blocker points at nothing resolved: neither {resolved} nor "
+            f"{contract_resolved} exists. Resolve the design first "
+            f"(`state resolve`), then re-open."
+        )
+    rec.state = "pending"
+    # `approved_at` goes because the capability is no longer approved, and a
+    # stale timestamp saying it was would be a lie in the state file. The
+    # Review Record path stays: it is a real historical artifact and `retry`
+    # keeps it too. The consequence — `state show` displays a review path on
+    # a capability with work in flight — is the known open item, not
+    # something to fix inconsistently in one command.
+    rec.approved_at = ""
+    if not rec.blocker:
+        rec.blocker = args.blocker
+    save_state(record, root)
+    _print(
+        f"re-opened {args.module}/{args.capability} as pending: it is no longer "
+        f"consumable by other modules until it reaches fully_approved again. "
+        f"Reason: {reason}. Any module that declared `uses:` on it should be "
+        f"told — run `dependers-of {args.capability}` for the list."
+    )
+    return 0
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     record = load_state(args.module, Path(args.root))
     if args.capability:
@@ -964,9 +1313,41 @@ def cmd_show(args: argparse.Namespace) -> int:
             )
         yaml.safe_dump({args.capability: rec.to_dict()}, sys.stdout, sort_keys=False)
     else:
+        # Corrected against the architecture before it is printed. Without
+        # this the summary only ever saw the capabilities somebody happened
+        # to register, so a module with one of three approved printed
+        # `complete` and the two it had never reached were not there to
+        # disagree. Asking the architecture costs one read and closes it.
+        try:
+            declared = _contract_capabilities(load_arch(REPO_ROOT), args.module)
+        except (ArchError, StateError):
+            declared = set()
+        missing = sorted(declared - set(record.capabilities))
         # A comment, not a field: the summary belongs to the reader, not to
         # the file, so the YAML below stays facts only.
-        print(f"# module_state: {record.module_state}")
+        print(
+            f"# module_state: "
+            f"{compute_module_state(record.capabilities.values(), missing)}"
+        )
+        if missing:
+            print(
+                f"# not registered ({len(missing)} of {len(declared)} declared "
+                f"by the contract): {', '.join(missing)}",
+                file=sys.stderr,
+            )
+        # A contract-level blocker has no capability to hang off, so `state
+        # show` is the only place it can be named. A module with one is
+        # stopped, and the rows below all look ordinary.
+        open_contract = naming.artifact_path(
+            Path(args.root), args.module, CONTRACT_SCOPE, "design-blocker"
+        )
+        if open_contract.is_file():
+            print(
+                f"# STOPPED: an open contract-level design blocker at "
+                f"{open_contract} — every capability in {args.module} is "
+                f"gated until `state resolve {args.module} {CONTRACT_SCOPE}`",
+                file=sys.stderr,
+            )
         yaml.safe_dump(record.to_dict(), sys.stdout, sort_keys=False)
     return 0
 
@@ -1087,6 +1468,7 @@ def cmd_upstream(args: argparse.Namespace) -> int:
         )
         return 0
 
+    _report_retracted_guarantees(arch, root, args.module, args.capability)
     rows = _upstream_states(arch, root, uses)
     red = [r for r in rows if r[2] != "fully_approved"]
     _print(
@@ -1106,6 +1488,54 @@ def cmd_upstream(args: argparse.Namespace) -> int:
         return 1
     _print("green: every declared upstream is fully_approved.")
     return 0
+
+
+def _report_retracted_guarantees(
+    arch: Architecture, root: Path, module: str, capability: str | None
+) -> None:
+    """Approved capabilities standing on something no longer consumable.
+
+    The upstream gate answers "may I start", and it can only see the module's
+    whole declared `uses` set. This answers a different question: a
+    capability that was `fully_approved` — consumable by every other module —
+    on the strength of a guarantee that a later design change retracted. The
+    transition `fully_approved -> changes_requested` exists, but nothing
+    performs it on its behalf, and deliberately so: a capability would be
+    re-opened by another module's work, using a review verdict to record
+    something no reviewer said, and one upstream rework would take out every
+    downstream capability with it.
+
+    So it is reported, not enforced. The capability stays consumable until
+    Owner decides otherwise; the point is that the decision gets made with
+    the information in front of them rather than never.
+    """
+    record = load_state(module, root)
+    if capability:
+        targets = [(capability, record.capabilities.get(capability))]
+    else:
+        targets = sorted(record.capabilities.items())
+    for cap, rec in targets:
+        if rec is None or rec.state != "fully_approved" or not rec.consumes:
+            continue
+        broken = []
+        for dep in rec.consumes:
+            found = _provider_of(arch, dep)
+            if found is None:
+                broken.append((dep, "(no provider)", "undeclared"))
+                continue
+            provider, _ = found
+            dep_rec = load_state(provider, root).capabilities.get(dep)
+            state = dep_rec.state if dep_rec else "unregistered"
+            if state != "fully_approved":
+                broken.append((dep, provider, state))
+        if broken:
+            detail = ", ".join(f"{d} ({pr}, {st})" for d, pr, st in broken)
+            _print(
+                f"  ⚠ {module}/{cap} is fully_approved and consumable, but "
+                f"rests on: {detail}. A design change retracted it. Nothing "
+                f"re-opened this automatically — decide with Owner whether to "
+                f"`mark-changes` it or leave it."
+            )
 
 
 def _print(msg: str) -> None:
@@ -1164,6 +1594,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="the Implementation Manifest this review covers; required",
     )
+    sp.add_argument(
+        "--tests",
+        default="",
+        help="the Tester's Test Record; required, and the source of the obligation mapping",
+    )
 
     sp = sub.add_parser("abandon", help="owner closes a capability")
     module_cap(sp)
@@ -1171,6 +1606,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--review",
         default="",
         help="the reviewer's ABANDON Record; omit when this is purely an Owner decision",
+    )
+
+    sp = sub.add_parser(
+        "resolve",
+        help="close a design blocker, recording the decision",
+    )
+    sp.add_argument("module")
+    sp.add_argument(
+        "capability",
+        help=f"the capability, or {CONTRACT_SCOPE} for a contract-level blocker",
+    )
+    sp.add_argument(
+        "--resolution",
+        default="",
+        help="what was decided and which design files changed; required",
+    )
+
+    sp = sub.add_parser(
+        "reopen",
+        help="take back a fully_approved capability whose design changed",
+    )
+    module_cap(sp)
+    sp.add_argument(
+        "--reason",
+        default="",
+        help="what changed in the design; required and recorded",
+    )
+    sp.add_argument(
+        "--blocker",
+        default="",
+        help="the resolved design blocker that caused this; required, and must exist",
     )
 
     sp = sub.add_parser("show", help="print state for module or capability")
@@ -1207,6 +1673,8 @@ _HANDLERS = {
     "retry": cmd_retry,
     "mark-approved": cmd_mark_approved,
     "abandon": cmd_abandon,
+    "reopen": cmd_reopen,
+    "resolve": cmd_resolve,
     "show": cmd_show,
     "dependers-of": cmd_dependers_of,
     "upstream": cmd_upstream,

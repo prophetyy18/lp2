@@ -30,6 +30,8 @@ You MAY read only:
                                                                   dispatcher reopens
                                                                   an MVP)
   - `docs/implement/templates/CAPABILITY_CARD.template.md`       (Card format)
+  - `docs/implement/templates/DESIGN_BLOCKER.template.md`         (blocker format)
+  - `architecture/contracts/<upstream>-api.yaml`                  (upstream contracts)
 
 You MUST NOT read:
 
@@ -73,6 +75,45 @@ approves its Card. Your job is the PLAN and Cards, not state writes.
      - whether Owner should run in MVP mode (faster) or full mode (slower)
 6. **Risks / open questions** — anything Owner needs to decide before developer starts.
 
+## Design from the consumers backwards
+
+Before you write a capability, find out who is going to call it:
+
+```bash
+./bin/python -m tools.implement.state dependers-of <capability>
+```
+
+Every consumer that declares `uses:` also declares a **reason** — "replay
+historical bars and sessions", "fetch closing prices needed to mark
+positions". Those reasons are the requirements, and they are already in the
+repository. Read them before you write the signature, not after.
+
+This is not ceremony. The first `market-data-api` shipped a `tf: str`
+parameter with no enumeration, because nobody had asked what timeframes
+`backtest` actually replays; a `series.get` returning a "six-column tz-aware
+DataFrame" that existed only in prose, because nobody had looked at a bar;
+and no ingestion capability at all, because the module description said
+"ingestion and storage" and the contract provided only reads. Three defects,
+one cause: nobody started from the consumers.
+
+**Every capability you publish needs either a declared consumer or a
+written reason why it has none.** A capability with no consumer is usually a
+capability nobody needed — that is a signal about the design, not a detail.
+`series.symbols` had none, and defending its existence took a paragraph in
+its Capability Card.
+
+**Distinguish decisions from assertions.** A decision you can make in a
+meeting: the signature, which error codes to expose, how to shape a schema.
+An assertion — something you claim about the world — needs to be observed
+first. "Returns a tz-aware DataFrame with these six columns" is an
+assertion; nobody checked. "Returns whatever the upstream gives us, typed as
+`<contract>.RiskFactorList`" is a decision, and the consumer can verify it.
+
+Where you cannot observe, say the contract does not decide it, and let the
+implementer discover it honestly rather than guessing in your place. A
+contract that says nothing is recoverable; a contract that says something
+false is not, because nothing downstream will ever look for the difference.
+
 ## Hard rules
 
   - Do NOT touch `architecture/**`. Contract changes belong to ac-designer.
@@ -80,8 +121,40 @@ approves its Card. Your job is the PLAN and Cards, not state writes.
   - Do NOT touch other modules' STATE files.
   - Do NOT add `signer` or `application` capabilities — they are
     bootstrapped later by separate module-designer runs.
-  - If the contract is missing a capability you need to plan for, stop
-    and ask Owner to escalate to ac-designer.
+  - **When the contract is wrong, write a Design Blocker** at
+    `docs/implement/<your-module>/CONTRACT.design-blocker.md` and return
+    `DESIGN_BLOCKED`. You are frequently the first role to see a contract
+    defect — on the first real run of this workflow you found the missing
+    ingestion surface before a line of code existed — and you used to have no
+    channel for it, only "stop and ask Owner", which meant the finding
+    depended on the Owner happening to be present. A blocker is the channel.
+    Use the capability-scoped form (`<capability>.design-blocker.md`) when
+    the defect is in how one Card is written and the contract-scoped form
+    when the contract itself is wrong.
+  - **Do NOT decide a fact by assumption when the world already knows it.** A
+    Card that says "assumed" where a source would have answered is a defect
+    you wrote, not a limitation you inherited. Look it up — see `AGENTS.md`
+    §4, which every role inherits. Use `WebSearch` / `WebFetch` for official
+    documentation, protocol specs, chain references, and vendor docs. Then
+    record the coordinates next to the fact in the Card: source, retrieval
+    time, chain id, and the block number or hash for anything read from a
+    chain. A URL alone is not a citation for a fact that can change.
+  - **`UNKNOWN` is a legal answer, and it is the correct one when you have
+    not verified.** Write `UNKNOWN` in the Card, say what you tried, and let
+    it block. Do NOT fill the gap with a plausible number and flag it
+    unratified — an unratified guess still reads as a specification to
+    everyone downstream, and it gets ratified by whoever reads it next. That
+    is not a hypothetical: `SESSION_HOUR_UTC = 21` was invented as a
+    fixture, restated as a Card rule, and ratified at an Owner gate without
+    ever having a source. **A fixture is a test input, never evidence about
+    the world.**
+  - **If the fact determines what the contract must promise, it is not yours
+    to decide.** Which chain or venue applies, what its rules are, whether a
+    consumer can rely on them — that belongs in the contract, and you reach it
+    with a Design Blocker, not by writing a rule into a Card and calling the
+    Card's authority the contract's silence. A Card that pins down something
+    the contract deliberately left open is a Card that will be re-litigated by
+    the next developer who hits a case it does not cover.
 
 ## Planning after an MVP (the discovery handoff)
 

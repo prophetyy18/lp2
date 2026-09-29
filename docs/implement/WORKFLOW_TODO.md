@@ -322,3 +322,204 @@ Still open from the same review (P1, not started):
       carefully tested is not a reason to keep a field no consumer needs.
       It is the same failure as `reviewer_run`: attention spent on a
       maintainable artifact that never got a reader.
+
+- [x] The tests were written by the same agent that wrote the code, and
+      after it. Measured on the first end-to-end run: `api/__init__.py` at
+      23:14:24, the test file at 23:16:55. Nothing in the workflow said when
+      to write tests, and the outcome is the failure this repository has
+      been dismantling all along in a new place — a suite written by
+      looking at the implementation asserts what the implementation does,
+      comes back green, and certifies the code against itself. It reads like
+      verification and is closer to notarisation. Splitting the roles is the
+      only thing that fixes it, because it removes the *opportunity*: the
+      tester's read scope excludes `modules/<module>/**`, so its assertions
+      can only have come from the Card. Ordering instructions do not; the
+      code is still in the same context.
+- [x] Two corrections to that split, both from Owner and both right. The
+      test file is not frozen — contracts and Cards change during
+      development, and market-data's contract is currently wrong, so
+      immutable tests would verify a specification that no longer exists.
+      Ownership is single-author, not immutable: the tester writes, the
+      developer proposes. And the loop is not a pipe. The developer meets
+      cases the Card did not anticipate and cannot add tests, so it proposes
+      them as *requirement questions*; the tester rules on each one —
+      accept, reject with a reason, escalate. A proposal is a requirement
+      question and never a description of the code, because a description
+      carries the implementation to the tester through the Manifest and the
+      split does not hold. A rejection is a design question wearing a
+      test-coverage costume, and the reviewer reads that column.
+- [x] The obligation mapping moved from the developer's Manifest to the
+      tester's Test Record. It was the implementer signing a statement about
+      test coverage for code it had just written — the same
+      self-certification `_require_work_exists` exists to refuse. It is now
+      read from a file written by a party that saw neither the code nor the
+      developer's account of it. `mark-approved` also requires a Test Record
+      at all, so "nobody wrote independent tests" is visible in STATE rather
+      than inferred from a green suite.
+- [x] `## discovery` is no longer MVP-only. The tester writes it in every
+      mode, and it records something the MVP version could not: what the
+      author went and looked at *before* writing a single assertion. Full
+      mode previously had no discovery record at all, which the TODO had
+      already flagged as a hole in the handoff.
+- [x] `scope.py --role` enforces the split using the layer that already
+      exists. Tester: test file and its own records, no source. Developer:
+      source and records, no test file. Neither may revise the other's. An
+      unknown role raises rather than defaulting to the union, because
+      defaulting an unrecognised role to "everything" would open both
+      halves at once.
+- [x] ac-designer designs from the consumers backwards, and every published
+      capability needs a declared consumer or a written reason it has none.
+      The information was already in the repository — `depends_on[].reason`
+      on `backtest` and `pricing` says what each needs it for — and nothing
+      required ac-designer to read it. That omission produced all three
+      defects of `market-data-api` at once: an unenumerated `tf`, a DataFrame
+      promised in prose, and a module named for ingestion that declares only
+      reads. The rule also separates *decisions* (a meeting can make them)
+      from *assertions* (someone has to go and look), and says that where
+      you cannot observe, say the contract does not decide it — a contract
+      that says nothing is recoverable, one that says something false is not.
+- [x] Design blockers gained a contract scope. `<capability>` gates one
+      capability; `CONTRACT` gates the module. The hole was live on the first
+      run: a blocker found while building `series.symbols` would have left
+      `series.get` and `series.calendar` building on the same broken
+      contract, and those two are the ones that consume bars. module-designer
+      gained the same channel, having found the missing ingestion surface
+      with no standard way to report it and having improvised a route
+      through PLAN risks — which worked only because Owner was present and
+      the gap surfaced before any code.
+- [x] A resolved blocker must carry a non-empty `resolution:`. Resolution was
+      a rename and nothing else, so `mv a.design-blocker.md
+      a.design-blocker.resolved.md` lifted the gate while recording nothing.
+      Cheap, and it is the one thing that made the gate advisory without
+      saying so.
+- [x] ac-designer could not receive a blocker. It had no instruction for one,
+      and its read scope was `architecture/**` — so the file routing to it
+      was not even readable. Worse, "enter this role only when the user
+      explicitly asks" excluded the routed case by construction: a blocker is
+      the workflow's own evidence that a contract is wrong, and nobody below
+      ac-designer is allowed to change one. It can now read the blocker and
+      the Card beside it, is entered by routing as well as by name, and is
+      told that explaining why the contract is defensible is a valid outcome
+      while leaving the contract unchanged and calling it resolved is not.
+      It is also told to name the already-published capabilities its change
+      affects, because the dispatcher has no other way to learn that.
+- [x] The resume path after a design change had a dead end, created by the
+      tester split. It said "dispatch developer to reconcile its
+      implementation and Manifest" — and the developer cannot touch the
+      tests. If the change moved the specification, the tests asserted a
+      Card that no longer existed and neither role named in that sentence
+      was allowed to fix them; the gate opened and `mark-approved` then
+      refused a capability whose tests described the past. The tester is now
+      in the resume path, and the boundary between its first and second pass
+      is the *Card version* rather than elapsed time.
+- [x] `state resolve` replaces the dispatcher's hand `mv`. It requires the
+      resolution text, writes it in, performs the rename, and records the
+      path in STATE — so a design change leaves a trace that survives the
+      file, the same way `tests` and `review` already do. Refuses an empty
+      resolution, a capability the module does not own, and a second
+      resolution that would overwrite the first one's reasoning.
+- [x] A contract-level blocker has no capability row to appear on, so
+      `state show` names it. Every capability in a stopped module otherwise
+      looks entirely ordinary in STATE.yaml, which is a misleading file
+      rather than a missing feature.
+- [x] A retracted guarantee is now reportable. `mark-approved` records the
+      Manifest's `upstream consumed:` list in STATE, and `state upstream`
+      cross-references it: a `fully_approved` — i.e. consumable — capability
+      whose footing is no longer consumable is flagged. **Deliberately
+      reported, not enforced.** The transition `fully_approved ->
+      changes_requested` exists, but performing it automatically would
+      re-open a capability because a *different* module's work moved, using
+      a review verdict to record something no reviewer said, and one
+      upstream rework would take out every downstream capability with it.
+      The capability stays consumable until Owner decides; the point is that
+      the decision gets made with the information in front of them. This
+      closes the question the upstream gate structurally cannot answer: it
+      sees a module's whole declared `uses` set and only ever answers "may I
+      start".
+- [x] The resume chain after a design change was broken in three places, and
+      two of them were mine. (a) The state machine had **no way back**: a
+      `fully_approved` capability could go to `changes_requested` or
+      `abandoned` and nothing else, so one whose design moved could not be
+      re-worked at all. The only detour was `mark-changes` → `retry`, which
+      needs a reviewer's verdict and reason codes — recording a design
+      change as a rejection, the same error the upstream-regression report
+      is built to avoid. (b) The trigger for re-running the tester was
+      "the contract changed", but a contract change can land on any
+      capability in the file; the Card is what the tests were written *from*,
+      so the Card is what decides whether they are stale. `tester.md` already
+      said "the boundary is the Card version, not elapsed time" and the
+      dispatcher never said it. (c) MVP had no definition at all — the flow
+      diagram put the tester ahead of the developer unconditionally, while
+      an MVP's code *and tests* are disposable together and `mark-mvp`
+      deliberately asks for a `## discovery` rather than a Test Record.
+- [x] `state reopen`, for taking back a published capability whose design
+      changed. Not a new state — five states, unchanged. A new edge
+      (`fully_approved -> pending`) plus a command that walks it, because the
+      graph alone cannot tell two edges to `pending` apart: `retry` means a
+      reviewer rejected this, `reopen` means the design under it moved. They
+      have disjoint starting states, which a test pins.
+      **`--blocker` is mandatory.** A `--reason` typed by whoever wants the
+      capability back is not evidence of anything — it is the sentence that
+      made that person type it. Without the blocker, `reopen` is a way to
+      undo an approval by writing a paragraph. The same rule that makes
+      `mark-changes` demand a real Review Record: the credential comes from
+      the decision, never from the account of whoever is executing it. That
+      is also what makes it defensible next to the upstream-regression
+      decision to report rather than demote — one is a recorded design
+      decision, the other is a heuristic check.
+      If the implementation no longer conforms to the revised contract the
+      reviewer re-audit returns a genuine CHANGES_REQUESTED and `retry` is
+      the right path; `reopen` covers only the narrow case where the contract
+      withdrew a promise and the code still conforms.
+- [x] `behavior` was 60% decoration, and the loader silently swallowed
+      anything it did not recognise. Measured: of the five fields, `unit`,
+      `time` and `stale_tolerance` had **zero** readers, while
+      `pricing-api` declared `unit: decimal` / `time: event_time` across four
+      capabilities and nothing in the repository checked them. `idempotent`
+      and `ordering` had readers only because the obligation gate was wired
+      to them. Worse, a `behavior` block could carry any key at all: a
+      `timezone: tz_aware_utc` and a `total_nonsense: 42` both loaded
+      cleanly, vanished on parse, and `archctl validate` reported the
+      architecture valid. The file claimed a promise, the tooling agreed,
+      and no promise existed.
+      Three changes. The loader now **rejects** unrecognised keys — a
+      dropped key is worse than a rejected one, because rejection is
+      visible at write time. The obligation list is now **derived from what
+      the contract declares** rather than naming two fields by hand, so a
+      field is either enforced or it should not exist; `unit` and `time`
+      went from zero readers to enforced the moment the rule changed, and
+      `pricing.position.mark` now owes seven tests instead of five.
+      `stale_tolerance` is the one field with no obligation, called out in
+      the code rather than left as a silent gap — free text, so no test
+      name can be derived from it.
+- [x] `BehaviorTag.timezone`, from a Design Blocker the tester filed on its
+      first real run. `series.calendar` returned `list[datetime]` with no
+      stated awareness while its sibling `series.get` promised "tz-aware
+      UTC" in prose only, and `backtest` consumes both. Separate from `time`
+      on purpose: `time` says which clock the timestamps refer to, `timezone`
+      says what shape the value a caller receives is in — the difference a
+      consumer hits first, since `2024-01-02T21:00+00:00` and a bare
+      `2024-01-02 16:00` are the same instant and cannot be told apart
+      without knowing which one you were handed.
+      **This closes the hole the tester left.** It wrote eleven assertions
+      that hold whether or not the returned datetimes carry an offset,
+      because asserting either would have decided the contract question by
+      accident — so the suite was stable and blind, and a naive-local
+      implementation passed all eleven. Declaring `timezone` is only
+      meaningful now that declaring it costs a test.
+- [x] What deliberately did **not** change. `architecture/schemas/` does not
+      exist, and `SchemaRef` is documented as opaque: "the loader does not
+      (yet) verify the schema actually exists." `pricing-api` already carries
+      three dangling `output: { schema: ... }` refs into a directory that is
+      not there. Adding `output: { schema: market-data-api.TradingSession }`
+      would have looked machine-checked while checking nothing, which is
+      worse than prose — it implies an enforcement that does not exist. The
+      field went into `behavior` instead, where at least something reads it.
+      Also not changed: whether an instant is a trading session is a fact
+      about the exchange calendar, not something a contract can decide, so it
+      stayed out. And the fixture question the tester raised — 2024-01-05 is
+      a Friday with no bar, while the shared `WINDOW_END` points at it — is
+      a fact about the committed data, not about the design. It has no
+      `surface` in the blocker template, which is a real gap: a question
+      about the world currently has nowhere to go, and the tester shoved it
+      into the contract blocker because there was no third box.

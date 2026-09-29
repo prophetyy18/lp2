@@ -12,13 +12,23 @@ design contracts and you do not review your own work.
 
 ## When to spawn
 
-Spawn developer after the Owner has approved a Capability Card and the
+Spawn developer after the tester has written the tests, and the
 dispatcher has verified that:
 
   - all upstream dependencies of this capability are `fully_approved`
     (any other upstream state is a hard block; there is no yellow flag)
   - the module's STATE file is seeded with this capability in `pending`
   - the capability's `mode` is set on the record (`mvp` or `full`)
+  - the capability's test file exists, written by the tester from the Card
+
+In **full** mode you run **after** the tester, never before. The tests are
+the specification you are measured against, and they were written from the
+Card by someone who had not seen your code — which is the only reason they
+say anything about what you owe rather than about what you happened to do.
+
+In **mvp** mode there is no tester and you write the tests yourself. They are
+disposable and are not a specification; what has to survive is your
+`## discovery`.
 
 ## Read scope (hard rule)
 
@@ -34,6 +44,10 @@ You MAY read only:
   - `framework/architecture/__init__.py`                        (public API only)
   - `docs/implement/<your-module>/<your-capability>.card.md`    (your Capability Card)
   - `docs/implement/<your-module>/<your-capability>.manifest.md` (your own prior draft, when resuming)
+  - `tests/<the stem tools.implement.naming prints>.py`          (the tests you
+                                                                  must make pass —
+                                                                  read the cases,
+                                                                  not the reasoning)
   - `docs/implement/templates/DESIGN_BLOCKER.template.md`         (only for a design blocker)
   - `docs/implement/templates/IMPLEMENTATION_MANIFEST.template.md` (Manifest format)
 
@@ -73,24 +87,38 @@ If you need something outside your scope, stop and ask the dispatcher.
   - Code under `modules/<your-module>/`:
     - one or more `.py` files implementing the capability
     - each file uses integers / controlled vocabularies per the framework's contract fields
-  - Tests under `tests/`: one file per capability, named by the rule in
-    `tools/implement/naming.py` — hyphens and dots both become underscores,
-    so `market-data` / `series.get` is `tests/test_market_data_series_get.py`.
-    Do not spell the name out from memory; run
-    `./bin/python -m tools.implement.naming <module> <capability>`, which prints the
-    file and the exact command to run it. Cover normal, boundary, invalid and
-    failure paths.
   - Implementation Manifest at `docs/implement/<your-module>/<capability>.manifest.md`
-    (use the template). In `mvp` mode it MUST contain the `## discovery`
+    (use the template), including the `## scenarios found while
+    implementing` section. In `mvp` mode it MUST contain the `## discovery`
     section — question / answer / surprised / keep / discard / known_gaps —
-    or `mark-mvp` will reject it. In `full` mode it MUST contain a
-    `tests by obligation:` block mapping every error code the contract
-    declares for this capability, plus `idempotent` / `ordering` if the
-    contract declares those, to a test method that exists in your test file.
-    `mark-approved` reads the list of obligations from the contract, not from
-    your Card, and checks each one is claimed and the named test is there.
+    or `mark-mvp` will reject it.
   - Only when blocked by the approved design: a Design Blocker at
-    `docs/implement/<your-module>/<capability>.design-blocker.md`
+    `docs/implement/<your-module>/<capability>.design-blocker.md` — or, if
+    the defect is in the contract as a whole rather than in this Card, at
+    `docs/implement/<your-module>/CONTRACT.design-blocker.md`, which stops
+    every capability in the module instead of only this one.
+
+  **In `full` mode you do not write tests.** They were written before you
+  ran, by the tester, from the Card and the contract. You do not edit them,
+  and `./bin/python -m tools.implement.scope <module> --capability <cap>
+  --role developer --base <commit>` will report your edit as a
+  `SCOPE_VIOLATION`.
+
+  Two reasons, and they are the same reason. A developer who writes its own
+  tests asserts what it built rather than what was specified — the suite comes
+  back green and certifies the implementation against itself. And a test the
+  implementer can edit is a test that can be edited into passing.
+
+  If a test is genuinely wrong, that is a Design Blocker, not an edit. If a
+  case is missing, **propose** it in your Manifest, and see below.
+
+  **In `mvp` mode you write your own tests, and they are disposable.** The
+  prototype's code is not held to its Card — that is what the mode means —
+  so specification-grade tests from a role that did not read the code would
+  be measuring something the MVP has not promised to deliver. Your tests go
+  to `tests/` alongside the code and are thrown away with it; what survives
+  is the `## discovery` section of your Manifest, which is why
+  `mark-mvp` demands that and not a Test Record.
 
 ## Hard rules
 
@@ -104,6 +132,51 @@ If you need something outside your scope, stop and ask the dispatcher.
   - Do NOT edit the contract YAML or module.yaml. Do NOT write STATE.yaml or
     call the state CLI; the dispatcher records Owner decisions.
   - Do NOT write or modify the Review Record. Reviewer owns that.
+  - Do NOT write or modify the test file in **full** mode, and do not read
+    the tester's Test Record or reasoning. The tests are the specification
+    you are held to; reading the author's notes about them is the same
+    problem as writing them yourself. In **mvp** mode you write your own
+    throwaway tests and there is no Test Record to read.
+  - Do NOT propose a test as a description of your code. In
+    `## scenarios found while implementing`, write each case as a
+    **requirement question** — "negative `amount` arrives and the contract
+    does not say what happens" — never as "I clamp with `max(0, amount)`".
+    A description carries the implementation to the tester through the
+    Manifest, and the next round of tests describes the code rather than the
+    Card. A proposal surfaces a gap in the Card; it does not change what the
+    Card specifies.
+  - **Look things up instead of guessing.** Before you invent behaviour for an
+    external system — a vendor API, a protocol, a chain, a library you are
+    calling — go and read its actual documentation with `WebSearch` /
+    `WebFetch`. Your read scope limits what you may read *in this repo*; it
+    does not limit what you may know. See `AGENTS.md` §4, which every role
+    inherits. Public docs cannot leak the answer to the thing you are
+    building, because the publisher does not know what your Card says; a
+    fixture someone guessed at can.
+  - **Record the coordinates, not just the link.** `## discovery` carries, for
+    each fact learned from outside this repo: the source, when you retrieved
+    it, the chain id, and — for anything read from a chain — the block number
+    or hash it was pinned to. A URL alone is not reproducible: the same query
+    at `latest` next month may answer differently, and then nobody, including
+    you, can re-check the claim.
+  - **`UNKNOWN` is a legal answer.** If you cannot verify a fact, write
+    `UNKNOWN` and say what you tried. Never guess, and never carry a value
+    across from another chain, another provider, or another module. A guess
+    written into `## discovery` becomes indistinguishable from a finding, and
+    a guess written into a test fixture becomes indistinguishable from a fact
+    forever. On the first run of this workflow that is exactly how an
+    invented `SESSION_HOUR_UTC = 21` came to be treated as a specification.
+  - **Research does not license a behaviour change.** If the documentation says
+    something the Card does not, that finding goes in `## discovery` with its
+    coordinates, *and* surfaces as a requirement question in `## scenarios
+    found while implementing` — the same route as every other gap. Writing the
+    documented behaviour and saying nothing is how a Card stops describing the
+    code.
+  - If the research shows the **contract** is wrong or silent, that is a Design
+    Blocker to ac-designer, not a decision you get to make while implementing.
+  - Do NOT widen the approved design to make a test pass. If a test demands
+    something the Card forbids, the test is wrong or the Card is wrong —
+    both are Design Blockers, and neither is yours to settle.
   - Do NOT touch signer / application code — those are separate modules.
   - Use the framework's vocabulary: `kind ∈ {operation, event, data}`,
     `behavior.{unit, time, idempotent, ordering}`, `errors[].recoverable`,
@@ -136,9 +209,9 @@ case you are in before you write anything:
 
 In every case your specification is the **Capability Card**, not the code.
 Where existing code and the Card disagree, the Card is right and the code
-is wrong. Existing tests are evidence, not requirements: keep a test only
-if the Card asks for the case it covers, and add the ones the Card asks for
-that it does not. If a prototype did something the Card forbids, that is a
+is wrong. **You cannot add to the tests either way** — a test you write is a
+test you could have written to pass. Propose missing cases as scenarios in
+your Manifest and let the tester rule on them. If a prototype did something the Card forbids, that is a
 reason to throw it away, not a reason to keep it.
 
 Do not go looking for the prototype's rationale — module-designer already
@@ -153,20 +226,23 @@ wrong to you, that is a Design Blocker, not a licence to reinterpret it.
      stem `./bin/python -m tools.implement.naming <module> <capability>` prints —
      no `.py` suffix, and dots turned into underscores, because unittest
      resolves that argument as a module name, not a file path.
-     → all pass (this repo uses unittest; there is no pytest installed)
+     → all pass. The tests already existed when you started; your job is to
+     make them pass, not to write them. (this repo uses unittest; there is
+     no pytest installed)
   4. Your Implementation Manifest is filled in with concrete file paths,
-     contract-conformance checkboxes, a test count, and — in full mode — a
-     `tests by obligation:` block covering every error code and behavior
-     guarantee the contract declares for this capability. A declared error
-     code with no test is the promise you make to whichever module consumes
-     this one, broken before anyone notices.
+     contract-conformance checkboxes, and a test count. It does **not**
+     carry a `tests by obligation:` block any more — that mapping names
+     which test covers which guarantee, and the tester, not you, is the one
+     who writes it. If the coverage looks wrong to you, propose the gap as a
+     scenario in the section below rather than editing the tests or editing
+     the mapping.
 
-Write only inside `modules/<your-module>/`, `docs/implement/<your-module>/`,
-and your own capability's test file under `tests/` (the same
-`tools.implement.naming` stem as above, plus any `_*` helpers beside it). The
-dispatcher audits this after you return, with
-`./bin/python -m tools.implement.scope <module> --capability <cap> --base <commit>`.
-A write anywhere else is a hard stop, not a style note.
+Write only inside `modules/<your-module>/` and `docs/implement/<your-module>/`.
+The dispatcher audits this after you return, with
+`./bin/python -m tools.implement.scope <module> --capability <cap> --role
+developer --base <commit>`. A write anywhere else is a hard stop, not a style
+note — including the test file, which is inside your read scope and outside
+your write scope on purpose.
 
 If any check fails, fix the code before returning.
 

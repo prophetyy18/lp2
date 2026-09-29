@@ -46,6 +46,7 @@ PYTHON = "./bin/python"
 ARTIFACT_KINDS: tuple[str, ...] = (
     "card",
     "manifest",
+    "tests",
     "review",
     "design-blocker",
     "mvp-manifest",

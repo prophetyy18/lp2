@@ -229,6 +229,23 @@ class StateCLITests(unittest.TestCase):
         _set_mtime(target, MANIFEST_MTIME)
         return target
 
+    def _test_record(self, module: str, cap: str, block: str | None = None) -> Path:
+        """Write the Tester's Test Record that mark-approved now requires.
+
+        The obligation mapping used to live in the developer's Manifest,
+        which meant the implementer signed a statement about test coverage
+        for code it had just written. It is read from here instead.
+        """
+        target = self.root / module / f"{cap}.tests.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        section = "" if block is None else f"\n{block}\n"
+        target.write_text(
+            f"# tests: {module} / {cap}\n\n- mode: full{section}",
+            encoding="utf-8",
+        )
+        _set_mtime(target, MANIFEST_MTIME + 30)
+        return target
+
     def _review(
         self,
         module: str,
@@ -265,10 +282,26 @@ class StateCLITests(unittest.TestCase):
         target.write_text(
             f"# design blocker: {module} / {cap}\n\n"
             f"the contract declares only RPC_TIMEOUT; the node returns\n"
-            f"execution_reverted, so the error surface is wider than designed.\n",
+            f"execution_reverted, so the error surface is wider than designed.\n"
+            f"- resolution: \n",
             encoding="utf-8",
         )
         return target
+
+    def _resolve(self, blocker: Path, decision: str = "added EXECUTION_REVERTED") -> Path:
+        """Resolve a blocker the way the workflow says to: fill it in, rename.
+
+        Filling in is not optional. The rename is what lifts the gate, so a
+        rename that records nothing closes a design question without leaving
+        a trace of what closed it.
+        """
+        text = blocker.read_text(encoding="utf-8").replace(
+            "- resolution: \n", f"- resolution: {decision}\n"
+        )
+        blocker.write_text(text, encoding="utf-8")
+        resolved = blocker.with_name(blocker.name.replace(".md", ".resolved.md"))
+        blocker.rename(resolved)
+        return resolved
 
     def _run(self, *argv: str) -> tuple[int, str]:
         from tools.implement import state
@@ -362,6 +395,7 @@ class StateCLITests(unittest.TestCase):
             "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
             "--review", str(review),
             "--manifest", str(mf),
+            "--tests", str(self._test_record("alpha", "alpha.one")),
         )
         self.assertEqual(rc, 0)
         self.assertIn("fully_approved", out)
@@ -371,7 +405,8 @@ class StateCLITests(unittest.TestCase):
         self._seed("alpha", "alpha.one", mode="mvp")
         m = self._manifest("alpha", "alpha.one")
         self._run("--root", str(self.root), "mark-mvp", "alpha", "alpha.one", "--manifest", str(m))
-        rc, out = self._run("--root", str(self.root), "mark-approved", "alpha", "alpha.one", "--manifest", str(self._full_manifest("alpha", "alpha.one")))
+        rc, out = self._run("--root", str(self.root), "mark-approved", "alpha", "alpha.one", "--manifest", str(self._full_manifest("alpha", "alpha.one")),
+            "--tests", str(self._test_record("alpha", "alpha.one")))
         self.assertEqual(rc, 1)
         self.assertIn("not allowed", out)
         self.assertIn("pending", out)
@@ -556,6 +591,7 @@ class StateCLITests(unittest.TestCase):
             "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
             "--review", str(review),
             "--manifest", str(mf),
+            "--tests", str(self._test_record("alpha", "alpha.one")),
         )
         self.assertEqual(rc, 1)
         self.assertIn("design blocker", out)
@@ -593,14 +629,339 @@ class StateCLITests(unittest.TestCase):
         self._seed("alpha", "alpha.one")
         review = self._review("alpha", "alpha.one", "APPROVED")
         blocker = self._blocker("alpha", "alpha.one")
-        blocker.rename(blocker.with_name("alpha.one.design-blocker.resolved.md"))
+        self._resolve(blocker)
         mf = self._full_manifest("alpha", "alpha.one")
         rc, _ = self._run(
             "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
             "--review", str(review),
             "--manifest", str(mf),
+            "--tests", str(self._test_record("alpha", "alpha.one")),
         )
         self.assertEqual(rc, 0)
+
+    def test_a_contract_blocker_gates_every_capability_of_the_module(self) -> None:
+        """A defect in the contract belongs to no single capability.
+
+        The hole this closes was live in the first end-to-end run: a
+        blocker filed against `series.symbols` — the capability that tripped
+        over the missing ingestion surface — gated only `series.symbols`,
+        while `series.get` and `series.calendar` carried on building on the
+        same broken contract. And they are the two that actually consume
+        bars, so they are the two that needed the decision most.
+        """
+        self._seed("alpha", "alpha.one")
+        self._seed("alpha", "alpha.two")
+        blocker = self.root / "alpha" / "CONTRACT.design-blocker.md"
+        blocker.parent.mkdir(parents=True, exist_ok=True)
+        blocker.write_text(
+            "# design blocker: alpha / CONTRACT\n\n"
+            "the contract declares a read surface with no ingestion behind it.\n"
+            "- resolution: \n",
+            encoding="utf-8",
+        )
+        for cap in ("alpha.one", "alpha.two"):
+            review = self._review("alpha", cap)
+            manifest = self._full_manifest("alpha", cap)
+            rc, out = self._run(
+                "--root", str(self.root), "mark-approved", "alpha", cap,
+                "--review", str(review), "--manifest", str(manifest),
+            )
+            self.assertEqual(rc, 1, cap)
+            self.assertIn("contract-level design blocker", out)
+
+    def test_a_resolved_contract_blocker_lets_the_module_through(self) -> None:
+        self._seed("alpha", "alpha.one")
+        blocker = self.root / "alpha" / "CONTRACT.design-blocker.md"
+        blocker.parent.mkdir(parents=True, exist_ok=True)
+        blocker.write_text(
+            "# design blocker: alpha / CONTRACT\n\n"
+            "the contract declares a read surface with no ingestion behind it.\n"
+            "- resolution: \n",
+            encoding="utf-8",
+        )
+        self._resolve(blocker, "added an ingest capability to the contract")
+        review = self._review("alpha", "alpha.one")
+        manifest = self._full_manifest("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
+            "--review", str(review), "--manifest", str(manifest),
+            "--tests", str(self._test_record("alpha", "alpha.one")),
+        )
+        self.assertEqual(rc, 0, out)
+
+    def test_renaming_a_blocker_without_a_resolution_does_not_lift_the_gate(self) -> None:
+        """Resolution was a rename and nothing else, so a rename recorded nothing.
+
+        `mv x.design-blocker.md x.design-blocker.resolved.md` used to open
+        the gate. That closes a design question while leaving no trace of
+        what closed it, and the template has always asked for the sentence.
+        """
+        self._seed("alpha", "alpha.one")
+        blocker = self._blocker("alpha", "alpha.one")
+        blocker.rename(blocker.with_name("alpha.one.design-blocker.resolved.md"))
+        review = self._review("alpha", "alpha.one")
+        manifest = self._full_manifest("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
+            "--review", str(review), "--manifest", str(manifest),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("carries no resolution", out)
+
+    def test_mark_approved_refuses_without_a_test_record(self) -> None:
+        """The tester is a required step, not an optional extra.
+
+        `mark-approved` used to read the developer's Manifest and the
+        developer's test file. Now it requires the Tester's record as well,
+        so "nobody wrote independent tests" has a different failure from
+        "the tests are weak" — the first is visible in the state file.
+        """
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one")
+        manifest = self._full_manifest("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
+            "--review", str(review), "--manifest", str(manifest),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("--tests", out)
+
+    def test_the_test_record_path_is_recorded(self) -> None:
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one")
+        manifest = self._full_manifest("alpha", "alpha.one")
+        record = self._test_record("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
+            "--review", str(review), "--manifest", str(manifest),
+            "--tests", str(record),
+        )
+        self.assertEqual(rc, 0, out)
+        loaded = load_state("alpha", self.root)
+        # Recorded as given, like `manifest` and `review` — the dispatcher
+        # passes repo-relative paths, these tests pass absolute ones.
+        self.assertTrue(
+            loaded.capabilities["alpha.one"].tests.endswith("alpha/alpha.one.tests.md"),
+            loaded.capabilities["alpha.one"].tests,
+        )
+
+    def test_resolve_writes_the_decision_and_lifts_the_gate(self) -> None:
+        """Resolution was a manual `mv` that recorded nothing.
+
+        The rename is what lifts the gate, so the sentence next to it is the
+        only record of *why* a design question closed. A command that writes
+        the decision, performs the rename, and records the path in STATE
+        makes that impossible to skip.
+        """
+        self._seed("alpha", "alpha.one")
+        blocker = self._blocker("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "resolve", "alpha", "alpha.one",
+            "--resolution", "added EXECUTION_REVERTED to the contract",
+        )
+        self.assertEqual(rc, 0, out)
+        resolved = self.root / "alpha" / "alpha.one.design-blocker.resolved.md"
+        self.assertFalse(blocker.exists())
+        self.assertIn(
+            "added EXECUTION_REVERTED", resolved.read_text(encoding="utf-8")
+        )
+        loaded = load_state("alpha", self.root)
+        self.assertTrue(
+            loaded.capabilities["alpha.one"].blocker.endswith(
+                "alpha.one.design-blocker.resolved.md"
+            ),
+            loaded.capabilities["alpha.one"].blocker,
+        )
+
+    def test_resolve_refuses_an_empty_resolution(self) -> None:
+        self._seed("alpha", "alpha.one")
+        self._blocker("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "resolve", "alpha", "alpha.one",
+            "--resolution", "   ",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("--resolution is required", out)
+        # and the blocker is still open, so the gate is still shut
+        self.assertTrue((self.root / "alpha" / "alpha.one.design-blocker.md").is_file())
+
+    def test_resolve_refuses_a_capability_the_module_does_not_own(self) -> None:
+        """Otherwise a typo creates an orphan file nobody will ever find."""
+        rc, out = self._run(
+            "--root", str(self.root), "resolve", "alpha", "not.a.cap",
+            "--resolution", "whatever",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("not provided by module", out)
+
+    def test_state_show_names_an_open_contract_blocker(self) -> None:
+        """A contract-level blocker has no capability row to appear on.
+
+        Every capability in the module looks ordinary in STATE.yaml while
+        the module is actually stopped, so the rows alone are misleading.
+        """
+        self._seed("alpha", "alpha.one")
+        blocker = self.root / "alpha" / "CONTRACT.design-blocker.md"
+        blocker.parent.mkdir(parents=True, exist_ok=True)
+        blocker.write_text(
+            "# design blocker: alpha / CONTRACT\n\nno ingestion surface.\n",
+            encoding="utf-8",
+        )
+        rc, out = self._run("--root", str(self.root), "show", "alpha")
+        self.assertEqual(rc, 0)
+        self.assertIn("STOPPED", out)
+        self.assertIn("CONTRACT", out)
+
+    def test_consumes_is_read_from_the_manifest_on_approval(self) -> None:
+        self._seed("alpha", "alpha.one")
+        target = self.root / "alpha" / "alpha.one.manifest.md"
+        target.write_text(
+            "# manifest: alpha / alpha.one\n\n- mode: full\n"
+            "- upstream consumed: [beta.supply, beta.reserve]\n",
+            encoding="utf-8",
+        )
+        _set_mtime(target, MANIFEST_MTIME)
+        review = self._review("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
+            "--review", str(review), "--manifest", str(target),
+            "--tests", str(self._test_record("alpha", "alpha.one")),
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(
+            load_state("alpha", self.root).capabilities["alpha.one"].consumes,
+            ["beta.supply", "beta.reserve"],
+        )
+
+    def _approved_with_resolved_blocker(self) -> Path:
+        """`fully_approved`, with the design decision that retracts it on record."""
+        self._seed("alpha", "alpha.one")
+        review = self._review("alpha", "alpha.one")
+        manifest = self._full_manifest("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "mark-approved", "alpha", "alpha.one",
+            "--review", str(review), "--manifest", str(manifest),
+            "--tests", str(self._test_record("alpha", "alpha.one")),
+        )
+        self.assertEqual(rc, 0, out)
+        return self._resolve(self._blocker("alpha", "alpha.one"), "retracted")
+
+    def test_reopen_refuses_without_the_blocker_that_proves_the_design_moved(self) -> None:
+        """The bar, and the reason it is the bar.
+
+        A `--reason` typed by whoever wants the capability back is not
+        evidence of anything — it is the sentence that made the person type
+        it. Without the blocker, `reopen` is a way to undo an approval by
+        writing a sentence, which is the exact thing `mark-changes` refuses
+        when it demands a real Review Record.
+        """
+        self._approved_with_resolved_blocker()
+        rc, out = self._run(
+            "--root", str(self.root), "reopen", "alpha", "alpha.one",
+            "--reason", "I changed my mind this morning",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("--blocker is required", out)
+        self.assertEqual(
+            load_state("alpha", self.root).capabilities["alpha.one"].state,
+            "fully_approved",
+        )
+
+    def test_reopen_records_the_blocker_that_authorised_it(self) -> None:
+        resolved = self._approved_with_resolved_blocker()
+        rc, out = self._run(
+            "--root", str(self.root), "reopen", "alpha", "alpha.one",
+            "--reason", "the contract retracted the error surface",
+            "--blocker", str(resolved),
+        )
+        self.assertEqual(rc, 0, out)
+        rec = load_state("alpha", self.root).capabilities["alpha.one"]
+        self.assertEqual(rec.state, "pending")
+        self.assertTrue(
+            rec.blocker.endswith("alpha.one.design-blocker.resolved.md"),
+            rec.blocker,
+        )
+
+    def test_reopen_takes_back_an_approved_capability(self) -> None:
+        """The loop back to `pending` had to exist, and had to be `reopen`.
+
+        `fully_approved` is the one state another module may build on, and
+        it is reachable in a loop: the upstream gate is checked once, at
+        approval, and a later design change can retract what was approved.
+        Without this the module has no way back — `mark-changes` needs a
+        reviewer's verdict, and a design change is nobody's verdict.
+        """
+        self._approved_with_resolved_blocker()
+        rc, out = self._run(
+            "--root", str(self.root), "reopen", "alpha", "alpha.one",
+            "--reason", "the contract retracted the error surface",
+            "--blocker", "docs/implement/alpha/alpha.one.design-blocker.resolved.md",
+        )
+        self.assertEqual(rc, 0, out)
+        rec = load_state("alpha", self.root).capabilities["alpha.one"]
+        self.assertEqual(rec.state, "pending")
+        # not consumable any more, and it does not claim to have been approved
+        self.assertEqual(rec.approved_at, "")
+        # the Review Record pointer is a real historical artifact, and retry
+        # keeps it too — clearing it here would fix half of a known item
+        self.assertTrue(rec.review)
+
+    def test_reopen_requires_a_reason(self) -> None:
+        self._seed("alpha", "alpha.one")
+        rec = load_state("alpha", self.root)
+        rec.capabilities["alpha.one"].state = "fully_approved"
+        save_state(rec, self.root)
+        rc, out = self._run(
+            "--root", str(self.root), "reopen", "alpha", "alpha.one",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("--reason is required", out)
+        self.assertEqual(
+            load_state("alpha", self.root).capabilities["alpha.one"].state,
+            "fully_approved",
+        )
+
+    def test_reopen_refuses_a_capability_that_owes_work(self) -> None:
+        """`retry` is for those; sending them to `reopen` is a category error."""
+        self._seed("alpha", "alpha.one")
+        rc, out = self._run(
+            "--root", str(self.root), "reopen", "alpha", "alpha.one",
+            "--reason", "whatever",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("not fully_approved", out)
+        self.assertIn("retry", out)
+
+    def test_reopen_refuses_a_blocker_that_does_not_exist(self) -> None:
+        """Re-opening a published capability needs the decision on record."""
+        self._seed("alpha", "alpha.one")
+        rec = load_state("alpha", self.root)
+        rec.capabilities["alpha.one"].state = "fully_approved"
+        save_state(rec, self.root)
+        rc, out = self._run(
+            "--root", str(self.root), "reopen", "alpha", "alpha.one",
+            "--reason", "the design moved", "--blocker", "docs/nowhere.md",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("exists", out)
+
+    def test_retry_cannot_take_back_an_approved_capability(self) -> None:
+        """The two commands must not be interchangeable.
+
+        `retry` means "a reviewer rejected this" and its whole point is that
+        a rejection is always a rejection. If it could also mean "the design
+        changed", a design change would be recorded as a review verdict.
+        """
+        self._seed("alpha", "alpha.one")
+        rec = load_state("alpha", self.root)
+        rec.capabilities["alpha.one"].state = "fully_approved"
+        save_state(rec, self.root)
+        rc, out = self._run(
+            "--root", str(self.root), "retry", "alpha", "alpha.one",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("reopen", out)
+        self.assertIn("fully_approved", out)
 
     def test_retry_is_not_gated_by_a_blocker(self) -> None:
         """The check must not deadlock the path out of a blocker.
@@ -718,6 +1079,7 @@ class StateCLITests(unittest.TestCase):
     def _approve(self, module: str, cap: str, review: Path, manifest: Path):
         return self._run(
             "--root", str(self.root), "mark-approved", module, cap,
+            "--tests", str(self._test_record(module, cap)),
             "--review", str(review), "--manifest", str(manifest),
         )
 
@@ -971,6 +1333,8 @@ class TestObligationGateTests(unittest.TestCase):
             "test_bad_input": "pass",
             "test_is_idempotent": "pass",
             "test_is_totally_ordered": "pass",
+            "test_keeps_scale": "pass",
+            "test_is_event_time": "pass",
         }
         target = self.repo / naming.test_rel_path("alpha", self.CAP)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -980,15 +1344,28 @@ class TestObligationGateTests(unittest.TestCase):
         target.write_text(src, encoding="utf-8")
         return target
 
-    def _manifest(self, block: str | None = None) -> Path:
+    def _manifest(self) -> Path:
         target = self.root / "alpha" / f"{self.CAP}.manifest.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            f"# manifest: alpha / {self.CAP}\n\n- mode: full", encoding="utf-8"
+        )
+        _set_mtime(target, MANIFEST_MTIME)
+        return target
+
+    def _test_record(self, block: str | None = None) -> Path:
+        """The Tester's record, and where the obligation mapping now lives.
+
+        It used to sit in the developer's Manifest, which had the implementer
+        signing a statement about test coverage for its own code.
+        """
+        target = self.root / "alpha" / f"{self.CAP}.tests.md"
         target.parent.mkdir(parents=True, exist_ok=True)
         section = "" if block is None else f"\n{block}\n"
         target.write_text(
-            f"# manifest: alpha / {self.CAP}\n\n- mode: full{section}",
-            encoding="utf-8",
+            f"# tests: alpha / {self.CAP}\n\n- mode: full{section}", encoding="utf-8"
         )
-        _set_mtime(target, MANIFEST_MTIME)
+        _set_mtime(target, MANIFEST_MTIME + 30)
         return target
 
     def _review(self, ran: str = "4 passed, 0 skipped") -> Path:
@@ -1014,11 +1391,13 @@ class TestObligationGateTests(unittest.TestCase):
         rec.capabilities[self.CAP] = CapabilityRecord(state="pending", mode="full")
         save_state(rec, self.root)
         self._tests()
-        manifest = self._manifest(block)
+        manifest = self._manifest()
+        record = self._test_record(block)
         review = self._review(ran)
         return self._run(
             "--root", str(self.root), "mark-approved", "alpha", self.CAP,
             "--manifest", str(manifest), "--review", str(review),
+            "--tests", str(record),
         )
 
     def _run(self, *argv: str) -> tuple[int, str]:
@@ -1035,10 +1414,18 @@ class TestObligationGateTests(unittest.TestCase):
             rc = int(exc.code or 0)
         return rc, buf.getvalue()
 
+    # Every guarantee the fixture contract declares, mapped. The list is not
+    # written by hand: it is what `_test_obligations` derives from
+    # `unit: decimal`, `time: event_time`, `idempotent: true`,
+    # `ordering: total` and the two error codes -- which is the point. When
+    # the derivation grew a field, this block stopped being complete and the
+    # tests failed, which is how the growth was noticed.
     FULL_BLOCK = (
         "- tests by obligation:\n"
         "   - ALPHA_TRANSIENT: test_transient\n"
         "   - ALPHA_BAD_INPUT: test_bad_input\n"
+        "   - unit: test_keeps_scale\n"
+        "   - time: test_is_event_time\n"
         "   - idempotent: test_is_idempotent\n"
         "   - ordering: test_is_totally_ordered"
     )
@@ -1079,6 +1466,8 @@ class TestObligationGateTests(unittest.TestCase):
             "- tests by obligation:\n"
             "   - ALPHA_TRANSIENT: test_transient\n"
             "   - ALPHA_BAD_INPUT: test_never_written\n"
+            "   - unit: test_keeps_scale\n"
+            "   - time: test_is_event_time\n"
             "   - idempotent: test_is_idempotent\n"
             "   - ordering: test_is_totally_ordered"
         )
@@ -1117,14 +1506,125 @@ class TestObligationGateTests(unittest.TestCase):
         (self.repo / "tests/test_alpha_something_else.py").write_text(
             "import unittest\n", encoding="utf-8"
         )
-        manifest = self._manifest(self.FULL_BLOCK)
+        manifest = self._manifest()
+        record = self._test_record(self.FULL_BLOCK)
         review = self._review()
         rc, out = self._run(
             "--root", str(self.root), "mark-approved", "alpha", self.CAP,
             "--manifest", str(manifest), "--review", str(review),
+            "--tests", str(record),
         )
         self.assertEqual(rc, 1)
         self.assertIn("does not exist", out)
+
+    def _behavior(self, **fields) -> None:
+        """Set the capability's behavior block, keeping its two error codes.
+
+        The errors stay so that a test about behavior does not also become a
+        test about a missing error mapping.
+        """
+        body = "\n".join(f"      {k}: {v}" for k, v in fields.items())
+        (self.repo / "architecture/contracts/alpha-api.yaml").write_text(
+            "name: alpha-api\nversion: 1\nrequires: []\nprovides:\n"
+            "  - id: alpha.flagged\n    kind: operation\n"
+            "    signature: alpha.flagged() -> int\n"
+            "    errors:\n"
+            "      - { code: ALPHA_TRANSIENT, recoverable: transient }\n"
+            "      - { code: ALPHA_BAD_INPUT, recoverable: user_input }\n"
+            "    behavior:\n" + body + "\n",
+            encoding="utf-8",
+        )
+
+    def test_every_declared_behavior_field_becomes_an_obligation(self) -> None:
+        """`unit` and `time` had zero readers; declaring them proved nothing.
+
+        The gate named `idempotent` and `ordering` by hand and ignored the
+        rest, so a contract could declare fourteen `unit: decimal`
+        guarantees across four capabilities that nothing would ever check --
+        `behavior` was 60% decoration, and adding a field to it added another
+        unread one. Deriving the list means a field is enforced or it should
+        not exist.
+        """
+        from tools.implement.state import _test_obligations
+
+        self._behavior(unit="decimal", time="event_time", timezone="tz_aware_utc",
+                       idempotent="true", ordering="total")
+        from framework.architecture import load as load_arch
+
+        obligations = _test_obligations(
+            _capability_from_yaml(load_arch(self.repo), self.CAP)
+        )
+        for key in ("unit", "time", "timezone", "idempotent", "ordering"):
+            self.assertIn(key, obligations)
+
+    def test_a_negative_or_absent_guarantee_earns_no_obligation(self) -> None:
+        """An obligation is a promise, and these promise nothing to test."""
+        from tools.implement.state import _test_obligations
+        from framework.architecture import load as load_arch
+
+        self._behavior(idempotent="false", ordering="none")
+        obligations = _test_obligations(
+            _capability_from_yaml(load_arch(self.repo), self.CAP)
+        )
+        self.assertNotIn("idempotent", obligations)
+        self.assertNotIn("ordering", obligations)
+
+    def test_stale_tolerance_is_the_one_field_with_no_obligation(self) -> None:
+        """Free text, so no test name can be derived from it. Said out loud.
+
+        The alternative is leaving it as a silent gap, which is how `unit`
+        and `time` stayed unread for as long as they did.
+        """
+        from tools.implement.state import _test_obligations
+        from framework.architecture import load as load_arch
+
+        self._behavior(stale_tolerance="5min")
+        obligations = _test_obligations(
+            _capability_from_yaml(load_arch(self.repo), self.CAP)
+        )
+        self.assertEqual(
+            [k for k in obligations if k not in ("ALPHA_TRANSIENT", "ALPHA_BAD_INPUT")],
+            [],
+        )
+
+    def test_an_untested_timezone_is_refused(self) -> None:
+        """The gap the tester left, and why it needed a rule to close.
+
+        The tester wrote assertions that hold whether or not the returned
+        datetimes carry a UTC offset, because asserting either would have
+        decided the contract question by accident. The suite was stable and
+        blind: a naive-local implementation passed all eleven. Declaring
+        `timezone` is only meaningful because declaring it now costs a test.
+        """
+        from tools.implement.state import CapabilityRecord, load_state, save_state
+
+        rec = load_state("alpha", self.root)
+        rec.capabilities[self.CAP] = CapabilityRecord(state="pending", mode="full")
+        save_state(rec, self.root)
+        self._behavior(unit="decimal", time="event_time", timezone="tz_aware_utc")
+        self._tests({
+            "test_transient": "pass", "test_bad_input": "pass",
+            "test_is_idempotent": "pass", "test_is_totally_ordered": "pass",
+        })
+        manifest = self._manifest()
+        # a Test Record that maps only the two hard-coded obligations
+        record = self._test_record(
+            "- tests by obligation:\n"
+            "   - ALPHA_TRANSIENT: test_transient\n"
+            "   - ALPHA_BAD_INPUT: test_bad_input\n"
+            "   - unit: test_keeps_scale\n"
+            "   - time: test_is_event_time\n"
+            "   - idempotent: test_is_idempotent\n"
+            "   - ordering: test_is_totally_ordered"
+        )
+        review = self._review()
+        rc, out = self._run(
+            "--root", str(self.root), "mark-approved", "alpha", self.CAP,
+            "--manifest", str(manifest), "--review", str(review),
+            "--tests", str(record),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("timezone", out)
 
     def test_a_review_without_a_test_run_is_refused(self) -> None:
         rc, out = self._approve(self.FULL_BLOCK, ran="")
@@ -1189,7 +1689,7 @@ class TestObligationGateTests(unittest.TestCase):
         rec.capabilities[self.CAP] = CapabilityRecord(state="pending", mode="full")
         save_state(rec, self.root)
         self._tests()
-        manifest = self._manifest(None)  # no obligations block
+        manifest = self._manifest()
         review = self._review()
         review.write_text(
             review.read_text(encoding="utf-8")
@@ -1244,32 +1744,108 @@ class CrossModuleGateTests(unittest.TestCase):
         rec.capabilities[cap] = CapabilityRecord(state=st, mode="full")
         save_state(rec, self.root)
 
+    def test_module_state_counts_capabilities_nobody_registered(self) -> None:
+        """The summary must not report `complete` for a partly-built module.
+
+        Found on the first end-to-end run: a module had one of its three
+        capabilities `fully_approved` and printed `complete`, because
+        `compute_module_state` only ever saw the rows in STATE.yaml and the
+        two capabilities nobody had reached were not there to disagree with
+        it. The architecture is the only thing that knows all three exist.
+
+        (That module was `market-data`, since retired — see
+        `docs/implement/market-data/series.calendar.card.md`. The fixture is
+        `robinhood-features` now, which is the layer that module's bars
+        capability was folded into.)
+        """
+        self._set_upstream("robinhood-features", "features.position.value", "fully_approved")
+        rc, out = self._run("--root", str(self.root), "show", "robinhood-features")
+        self.assertEqual(rc, 0)
+        self.assertIn("module_state: in_progress", out)
+        self.assertNotIn("module_state: complete", out)
+        self.assertIn("features.quote.usdg", out)
+        self.assertIn("features.attribution.attribute", out)
+
+    def test_a_fully_registered_and_approved_module_is_complete(self) -> None:
+        """The correction must not make `complete` unreachable."""
+        for cap in (
+            "features.position.value",
+            "features.position.principal_delta",
+            "features.attribution.attribute",
+            "features.quote.usdg",
+        ):
+            self._set_upstream("robinhood-features", cap, "fully_approved")
+        rc, out = self._run("--root", str(self.root), "show", "robinhood-features")
+        self.assertEqual(rc, 0)
+        self.assertIn("module_state: complete", out)
+        self.assertNotIn("not registered", out)
+
+    def test_a_retracted_guarantee_is_reported_not_silently_kept(self) -> None:
+        """`consumes` is what makes an approved capability's footing checkable.
+
+        The upstream gate can only see the module's whole declared `uses`
+        set and only answers "may I start". This asks what an already
+        `fully_approved` — i.e. consumable — capability was actually standing
+        on, which is the question that had no answer at all before.
+        """
+        rec = load_state("robinhood-rpc", self.root)
+        rec.capabilities["rpc.adapter.logs"] = CapabilityRecord(
+            state="fully_approved", mode="full", consumes=["protocol.pool_key.parse"]
+        )
+        save_state(rec, self.root)
+        # protocol.pool_key.parse is unregistered, so the capability is
+        # consumable on a guarantee nothing provides.
+        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-rpc", "rpc.adapter.logs")
+        self.assertIn("retracted", out)
+        self.assertIn("protocol.pool_key.parse", out)
+        # reported, not enforced: not re-opened behind Owner's back
+        self.assertEqual(
+            load_state("robinhood-rpc", self.root).capabilities["rpc.adapter.logs"].state,
+            "fully_approved",
+        )
+
+    def test_a_sound_guarantee_is_not_reported(self) -> None:
+        self._set_upstream("robinhood-protocol", "protocol.pool_key.parse", "fully_approved")
+        rec = load_state("robinhood-rpc", self.root)
+        rec.capabilities["rpc.adapter.logs"] = CapabilityRecord(
+            state="fully_approved", mode="full", consumes=["protocol.pool_key.parse"]
+        )
+        save_state(rec, self.root)
+        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-rpc", "rpc.adapter.logs")
+        self.assertNotIn("retracted", out)
+
     # --- dependers-of ------------------------------------------------------
 
     def test_dependers_of_resolves_the_provider_from_the_architecture(self) -> None:
         """The old version split on the first dot and invented a module.
 
-        `series.get` -> a module called `series`, which does not exist. The
-        provider is market-data, so dependers-of could never list one.
+        `protocol.sizing.compute` -> a module called `protocol`, which does
+        not exist. The provider is `robinhood-protocol`, so dependers-of could
+        never list one.
         """
         import yaml
 
-        rc, out = self._run("--root", str(self.root), "dependers-of", "series.get")
+        rc, out = self._run(
+            "--root", str(self.root), "dependers-of", "protocol.sizing.compute"
+        )
         self.assertEqual(rc, 0)
         data = yaml.safe_load(out)
-        self.assertEqual(data["owning_module"], "market-data")
-        self.assertEqual(data["contract"], "market-data-api")
-        self.assertNotEqual(data["owning_module"], "series")
+        self.assertEqual(data["owning_module"], "robinhood-protocol")
+        self.assertEqual(data["contract"], "robinhood-protocol-api")
+        self.assertNotEqual(data["owning_module"], "protocol")
 
     def test_dependers_of_lists_the_modules_that_use_it(self) -> None:
         import yaml
 
-        _, out = self._run("--root", str(self.root), "dependers-of", "series.get")
+        _, out = self._run(
+            "--root", str(self.root), "dependers-of", "protocol.sizing.compute"
+        )
         data = yaml.safe_load(out)
         names = {d["module"] for d in data["declared_dependers"]}
-        self.assertIn("backtest", names)
-        self.assertIn("pricing", names)
-        self.assertNotIn("market-data", names)  # never its own depender
+        self.assertIn("robinhood-strategy", names)
+        self.assertIn("robinhood-features", names)
+        self.assertIn("robinhood-execution", names)
+        self.assertNotIn("robinhood-protocol", names)  # never its own depender
 
     def test_dependers_of_rejects_a_capability_nobody_provides(self) -> None:
         rc, out = self._run("--root", str(self.root), "dependers-of", "not.a.cap")
@@ -1279,52 +1855,56 @@ class CrossModuleGateTests(unittest.TestCase):
     # --- the upstream gate -------------------------------------------------
 
     def test_upstream_is_green_for_a_module_with_no_dependencies(self) -> None:
-        rc, out = self._run("--root", str(self.root), "upstream", "market-data")
+        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-protocol")
         self.assertEqual(rc, 0)
         self.assertIn("green", out)
 
     def test_upstream_is_red_when_the_upstream_is_unregistered(self) -> None:
-        rc, out = self._run("--root", str(self.root), "upstream", "backtest")
+        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-rpc")
         self.assertEqual(rc, 1)
-        self.assertIn("series.get", out)
+        self.assertIn("protocol.pool_key.parse", out)
         self.assertIn("unregistered", out)
 
     def test_upstream_is_green_only_when_every_upstream_is_fully_approved(self) -> None:
-        for cap in ("series.get", "series.calendar"):
-            self._set_upstream("market-data", cap, "fully_approved")
-        for cap in ("position.mark", "pricing.quote"):
-            self._set_upstream("pricing", cap, "fully_approved")
-        rc, out = self._run("--root", str(self.root), "upstream", "backtest")
+        self._set_upstream("robinhood-protocol", "protocol.pool_key.parse", "fully_approved")
+        for cap in ("protocol.identity.chain_id.parse", "protocol.identity.address.parse"):
+            self._set_upstream("robinhood-protocol", cap, "fully_approved")
+        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-rpc")
         self.assertEqual(rc, 0)
-        self.assertIn("4/4 consumable", out)
+        self.assertIn("3/3 consumable", out)
 
     def test_upstream_is_red_with_an_mvp_upstream(self) -> None:
         """An MVP is not consumable, so it is red -- never a pass-through."""
-        for cap in ("position.mark", "pricing.quote"):
-            self._set_upstream("pricing", cap, "fully_approved")
-        self._set_upstream("market-data", "series.get", "mvp_developed")
-        self._set_upstream("market-data", "series.calendar", "fully_approved")
-        rc, out = self._run("--root", str(self.root), "upstream", "backtest")
+        for cap in ("protocol.identity.chain_id.parse", "protocol.identity.address.parse"):
+            self._set_upstream("robinhood-protocol", cap, "fully_approved")
+        self._set_upstream(
+            "robinhood-protocol", "protocol.pool_key.parse", "mvp_developed"
+        )
+        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-rpc")
         self.assertEqual(rc, 1)
         self.assertIn("mvp_developed", out)
         self.assertIn("retry <module> <cap> --mode full", out)
 
     def test_upstream_is_red_with_a_changes_requested_upstream(self) -> None:
-        self._set_upstream("market-data", "series.get", "changes_requested")
-        rc, out = self._run("--root", str(self.root), "upstream", "backtest")
+        self._set_upstream(
+            "robinhood-protocol", "protocol.pool_key.parse", "changes_requested"
+        )
+        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-rpc")
         self.assertEqual(rc, 1)
         self.assertIn("changes_requested", out)
 
     def test_upstream_flag_narrows_the_declared_set(self) -> None:
         """Module-level is the safe default; a Card knows better."""
-        self._set_upstream("market-data", "series.get", "fully_approved")
+        self._set_upstream(
+            "robinhood-protocol", "protocol.pool_key.parse", "fully_approved"
+        )
         rc, out = self._run(
-            "--root", str(self.root), "upstream", "backtest", "backtest.run",
-            "--upstream", "series.get",
+            "--root", str(self.root), "upstream", "robinhood-rpc", "rpc.adapter.logs",
+            "--upstream", "protocol.pool_key.parse",
         )
         self.assertEqual(rc, 0)
         self.assertIn("1/1 consumable", out)
-        self.assertNotIn("series.calendar", out)
+        self.assertNotIn("protocol.identity.address.parse", out)
 
     def test_upstream_rejects_an_unknown_module(self) -> None:
         rc, out = self._run("--root", str(self.root), "upstream", "ghost")
