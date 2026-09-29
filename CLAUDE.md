@@ -50,6 +50,23 @@ Isolation bounds what you may read **in this repository**. It does not bound
 what you may know — public documentation cannot tell you what a Card in this
 repo says, so reading it cannot leak the answer you are being measured on.
 
+> **`AGENTS.md` is inert until this is set, and this repository cannot set
+> it.** The default mode, `claude-md-or-agents-md`, reads `AGENTS.md` only
+> where the project has no `CLAUDE.md` — and this project has one. Every
+> constraint in that file is currently in your context because of a change to
+> a file outside the repository:
+>
+> ```json
+> // ~/.claude/settings.json — user level only; project and local settings
+> // are ignored for this key
+> { "pluginConfigs": { "agents-md": { "options": {
+>     "instructionFiles": "claude-md-and-agents-md" } } } }
+> ```
+>
+> Verify with `/context` **after** restarting — a session that started without
+> it will not pick it up. If you are reading this and the isolation rules feel
+> unfamiliar, that is why: they were never loaded until just now.
+
 ## When to stop and use the Architecture Designer role
 
 Do **not** silently redesign. Stop, explain what would need to change, and

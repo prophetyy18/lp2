@@ -1,7 +1,9 @@
 # Repository policy for AI coding agents
 
 **Constraints that hold for every role, in every session.** Loaded beside
-`CLAUDE.md` as project instructions, and inherited by spawned subagents.
+`CLAUDE.md` as project instructions, and inherited by spawned subagents —
+**if it is switched on, which is a user-level setting this repository cannot
+carry. See the note in `CLAUDE.md`.**
 
 `CLAUDE.md` says what to do in this repository and how work is routed here.
 This file says what is true regardless of who is doing it. The split is not
