@@ -16,6 +16,9 @@ from .errors import (
     BOUNDARY_VIOLATION,
     CONTRACT_INSUFFICIENT,
     ILLEGAL_DEPENDENCY,
+    SCHEMA_AMBIGUOUS,
+    SCHEMA_DANGLING,
+    SCHEMA_UNDECLARED,
     UNITEMISED_USES,
     ArchError,
     ContractInsufficient,
@@ -25,8 +28,10 @@ from .graph import consumers, direct_module_edges, owners, reverse_contracts
 from .impact import ImpactResult, impact_of_contract, impact_of_module
 from .loader import find_root, load
 from .model import (
+    BEHAVIOR_FIELDS,
     BEHAVIOR_ORDERING,
     BEHAVIOR_TIME,
+    BEHAVIOR_TIMEZONES,
     BEHAVIOR_UNITS,
     CAPABILITY_KINDS,
     RECOVERABLE_KINDS,
@@ -39,6 +44,7 @@ from .model import (
     Module,
     SchemaRef,
 )
+from .signatures import type_names
 from .query import (
     blast_radius,
     check_paths,
@@ -54,8 +60,10 @@ __all__ = [
     "Architecture",
     "ArchError",
     "ARCHITECTURE_CHANGE_REQUIRED",
+    "BEHAVIOR_FIELDS",
     "BEHAVIOR_ORDERING",
     "BEHAVIOR_TIME",
+    "BEHAVIOR_TIMEZONES",
     "BEHAVIOR_UNITS",
     "BOUNDARY_VIOLATION",
     "CAPABILITY_KINDS",
@@ -70,6 +78,9 @@ __all__ = [
     "ImpactResult",
     "Module",
     "RECOVERABLE_KINDS",
+    "SCHEMA_AMBIGUOUS",
+    "SCHEMA_DANGLING",
+    "SCHEMA_UNDECLARED",
     "SchemaRef",
     "UNITEMISED_USES",
     "BehaviorTag",
@@ -91,6 +102,7 @@ __all__ = [
     "readable",
     "readable_rules",
     "reverse_contracts",
+    "type_names",
     "validate",
     "validation_report",
 ]

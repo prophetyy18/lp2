@@ -10,7 +10,8 @@ import yaml
 from framework.architecture import loader
 
 
-def write_tree(root: Path, contracts: dict[str, dict], modules: dict[str, dict]) -> Path:
+def write_tree(root: Path, contracts: dict[str, dict], modules: dict[str, dict],
+               schemas: dict[str, dict] | None = None) -> Path:
     cdir = root / "architecture" / "contracts"
     mdir = root / "architecture" / "modules"
     cdir.mkdir(parents=True, exist_ok=True)
@@ -21,6 +22,13 @@ def write_tree(root: Path, contracts: dict[str, dict], modules: dict[str, dict])
         target = mdir / name
         target.mkdir(parents=True, exist_ok=True)
         (target / "module.yaml").write_text(yaml.safe_dump(body, sort_keys=False), encoding="utf-8")
+    if schemas:
+        sdir = root / "architecture" / "schemas"
+        sdir.mkdir(parents=True, exist_ok=True)
+        for name, body in schemas.items():
+            (sdir / f"{name}.yaml").write_text(
+                yaml.safe_dump(body, sort_keys=False), encoding="utf-8"
+            )
     return root
 
 

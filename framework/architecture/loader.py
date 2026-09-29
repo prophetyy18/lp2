@@ -15,8 +15,10 @@ import yaml
 
 from .errors import ArchError, INVALID_METADATA
 from .model import (
+    BEHAVIOR_FIELDS,
     BEHAVIOR_ORDERING,
     BEHAVIOR_TIME,
+    BEHAVIOR_TIMEZONES,
     BEHAVIOR_UNITS,
     CAPABILITY_KINDS,
     RECOVERABLE_KINDS,
@@ -32,6 +34,7 @@ from .model import (
 
 CONTRACTS_DIR = "architecture/contracts"
 MODULES_DIR = "architecture/modules"
+SCHEMAS_DIR = "architecture/schemas"
 
 
 def find_root(start: str | os.PathLike[str] | None = None) -> Path:
@@ -213,6 +216,15 @@ def _parse_behavior(raw: Any, prefix: str) -> BehaviorTag | None:
         return None
     if not isinstance(raw, dict):
         raise ArchError(INVALID_METADATA, f"{prefix}: `behavior` must be a mapping")
+    unknown = sorted(set(raw) - BEHAVIOR_FIELDS)
+    if unknown:
+        raise ArchError(
+            INVALID_METADATA,
+            f"{prefix}: unknown behavior field(s) {unknown}; a behavior block "
+            f"may only carry {sorted(BEHAVIOR_FIELDS)}. Unrecognised keys used "
+            f"to be dropped silently, so a contract could assert anything here "
+            f"and validate clean while promising nothing.",
+        )
     kwargs: dict[str, Any] = {}
     if "unit" in raw:
         unit = str(raw["unit"])
@@ -232,6 +244,15 @@ def _parse_behavior(raw: Any, prefix: str) -> BehaviorTag | None:
                 f"{', '.join(t for t in BEHAVIOR_TIME if t)}, got {t!r}",
             )
         kwargs["time"] = t
+    if "timezone" in raw:
+        tz = str(raw["timezone"])
+        if tz not in BEHAVIOR_TIMEZONES:
+            raise ArchError(
+                INVALID_METADATA,
+                f"{prefix}: behavior.timezone must be one of "
+                f"{', '.join(t for t in BEHAVIOR_TIMEZONES if t)}, got {tz!r}",
+            )
+        kwargs["timezone"] = tz
     if "idempotent" in raw:
         val = raw["idempotent"]
         if not isinstance(val, bool):
@@ -317,5 +338,36 @@ def load(root: str | os.PathLike[str] | None = None) -> Architecture:
                     f"(also defined in {arch.modules[module.name].path})",
                 )
             arch.modules[module.name] = module
+
+    schemas_dir = root_path / SCHEMAS_DIR
+    if schemas_dir.is_dir():
+        for f in sorted(schemas_dir.glob("*.yaml")) + sorted(schemas_dir.glob("*.yml")):
+            data = _load_yaml(f)
+            # The file name is the owning contract; the top level maps a
+            # TypeName to a JSON Schema. A file named for a contract that does
+            # not exist is an error, not a stray — otherwise a typo silently
+            # produces a schema nothing can reference.
+            owner = f.stem
+            if owner not in arch.contracts:
+                raise ArchError(
+                    INVALID_METADATA,
+                    f"{f}: schema file names contract `{owner}`, which is not "
+                    f"defined in {CONTRACTS_DIR}/",
+                )
+            for type_name, body in data.items():
+                if not isinstance(body, dict):
+                    raise ArchError(
+                        INVALID_METADATA,
+                        f"{f}: schema `{type_name}` must be a mapping (a JSON "
+                        f"Schema object), got {type(body).__name__}",
+                    )
+                key = f"{owner}.{type_name}"
+                if key in arch.schemas:
+                    raise ArchError(
+                        INVALID_METADATA,
+                        f"{f}: duplicate schema `{key}` (also defined in "
+                        f"{schemas_dir}/{owner}.yaml)",
+                    )
+                arch.schemas[key] = body
 
     return arch

@@ -14,13 +14,25 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from framework.architecture import boundary, graph, impact, loader, query, snapshot, validator
+from framework.architecture import (
+    boundary,
+    graph,
+    impact,
+    loader,
+    query,
+    signatures,
+    snapshot,
+    validator,
+)
 from framework.architecture.errors import (
     BOUNDARY_VIOLATION,
     CONTRACT_INSUFFICIENT,
     CYCLE_DETECTED,
     ILLEGAL_DEPENDENCY,
     INVALID_METADATA,
+    SCHEMA_AMBIGUOUS,
+    SCHEMA_DANGLING,
+    SCHEMA_UNDECLARED,
     UNITEMISED_USES,
     UNKNOWN_CONTRACT,
     ArchError,
@@ -37,11 +49,12 @@ class TempArchTest(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def arch(self, contracts=None, modules=None):
+    def arch(self, contracts=None, modules=None, schemas=None):
         write_tree(
             self.root,
             contracts if contracts is not None else base_contracts(),
             modules if modules is not None else base_modules(),
+            schemas,
         )
         return loader.load(self.root)
 
@@ -330,10 +343,57 @@ class SnapshotDiffTests(TempArchTest):
 
 
 class RealArchitectureTests(unittest.TestCase):
+    # Schema references this repository has not resolved yet.
+    #
+    # These six are a ratchet, not a baseline to grow into. Each one is a
+    # capability pointing at a type whose fields nobody has decided, and each
+    # is recorded here so that ADDING one fails this test while REMOVING one
+    # shows up as a deletion someone has to make on purpose. A plain
+    # `assertTrue(report["ok"])` would fail on all six forever and teach
+    # everyone to ignore it; suppressing the schema codes instead would hide
+    # the next one too.
+    #
+    # The three signing types and SizingRequest/SizingDecision are design
+    # decisions, not omissions — what gets signed, and with which key, is a
+    # security property. RiskFactorList is a vocabulary whose members have
+    # never been enumerated.
+    OPEN_SCHEMA_REFS = {
+        "robinhood-protocol-api.SizingDecision",
+        "robinhood-protocol-api.SizingRequest",
+        "robinhood-risk-api.RiskFactorList",
+        "robinhood-signer-api.LockStateRequest",
+        "robinhood-signer-api.SignRequest",
+        "robinhood-signer-api.SignedTransaction",
+    }
+
     def test_repo_architecture_is_valid(self) -> None:
         arch = load_real()
         report = query.validation_report(arch)
-        self.assertTrue(report["ok"], report["findings"])
+        blocking = [
+            f
+            for f in report["findings"]
+            if f["severity"] == "ERROR" and f["code"] != SCHEMA_DANGLING
+        ]
+        self.assertEqual(blocking, [], "non-schema errors in the real architecture")
+
+    def test_no_new_unresolved_schema_reference(self) -> None:
+        arch = load_real()
+        open_now = {
+            f.context["schema"]
+            for f in validator.validate(arch)
+            if f.code == SCHEMA_DANGLING
+        }
+        self.assertEqual(
+            open_now - self.OPEN_SCHEMA_REFS,
+            set(),
+            "a capability now references a schema that does not exist",
+        )
+        # Reported, not asserted away: this list should shrink, and how far it
+        # has is a fact about the architecture rather than about the test.
+        print(
+            f"\n  {len(self.OPEN_SCHEMA_REFS - open_now)}/{len(self.OPEN_SCHEMA_REFS)} "
+            f"schema references resolved; {len(open_now)} still open"
+        )
 
     def test_every_module_declares_capabilities_it_uses(self) -> None:
         arch = load_real()
@@ -481,6 +541,72 @@ class CapabilityModelTests(TempArchTest):
             self.arch(contracts=contracts)
         self.assertEqual(ctx.exception.code, INVALID_METADATA)
 
+    def test_behavior_rejects_an_unrecognised_key(self) -> None:
+        """A dropped key is worse than a rejected one.
+
+        The loader used to read only the keys it knew and ignore the rest, so
+        a contract could assert `timezone: tz_aware_utc` (or anything else)
+        in a behavior block, have it vanish on load, and still pass
+        `archctl validate`. The file claimed a promise, the tooling agreed,
+        and no promise existed. Measured before this was fixed: a
+        `total_nonsense: 42` key loaded without error and appeared in no
+        `to_dict`.
+        """
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {
+                "id": "alpha.run",
+                "kind": "operation",
+                "behavior": {"unit": "usdg", "total_nonsense": 42},
+            }
+        ]
+        with self.assertRaises(ArchError) as ctx:
+            self.arch(contracts=contracts)
+        self.assertEqual(ctx.exception.code, INVALID_METADATA)
+        self.assertIn("total_nonsense", str(ctx.exception))
+
+    def test_behavior_rejects_an_unknown_timezone(self) -> None:
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {
+                "id": "alpha.run",
+                "kind": "operation",
+                "behavior": {"timezone": "tz_aware_est"},
+            }
+        ]
+        with self.assertRaises(ArchError) as ctx:
+            self.arch(contracts=contracts)
+        self.assertEqual(ctx.exception.code, INVALID_METADATA)
+
+    def test_timezone_round_trips_and_is_not_confused_with_time(self) -> None:
+        """`time` says which clock; `timezone` says what shape you get back.
+
+        They sit next to each other and are easy to conflate, so the test
+        pins the distinction: a capability can declare one, the other, or
+        both, and `event_time` says nothing about whether the datetime a
+        consumer receives carries an offset.
+        """
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {
+                "id": "alpha.run",
+                "kind": "operation",
+                "behavior": {"time": "event_time", "timezone": "tz_aware_utc"},
+            },
+            {
+                "id": "alpha.bare",
+                "kind": "operation",
+                "behavior": {"time": "event_time"},
+            },
+        ]
+        arch = self.arch(contracts=contracts)
+        first, second = arch.contract("alpha-api").provides
+        self.assertEqual(first.behavior.timezone, "tz_aware_utc")
+        self.assertEqual(first.behavior.to_dict()["timezone"], "tz_aware_utc")
+        # `event_time` alone promises nothing about the shape of the value
+        self.assertEqual(second.behavior.timezone, "")
+        self.assertNotIn("timezone", second.behavior.to_dict())
+
     def test_behavior_round_trips_through_dict(self) -> None:
         contracts = base_contracts()
         contracts["alpha-api"]["provides"] = [
@@ -567,6 +693,179 @@ class CapabilityBreakingTests(TempArchTest):
         write_tree(self.root, contracts, base_modules())
         report = query.impact_of_diff(loader.load(self.root), str(snap))
         self.assertFalse(report["breaking"])
+
+
+# --- declared type shapes ---------------------------------------------------
+
+
+class SignatureScanTests(unittest.TestCase):
+    """`signatures.type_names` — pulling type names back out of prose.
+
+    This is a text scan, so the cases that matter are the ones where a naive
+    scan would report a type that is not one.
+    """
+
+    def test_params_and_return(self) -> None:
+        self.assertEqual(
+            signatures.type_names("a.f(x: PoolId, at: int) -> PositionValuation"),
+            {"PoolId", "PositionValuation"},
+        )
+
+    def test_reaches_into_generic_arguments(self) -> None:
+        self.assertEqual(
+            signatures.type_names("a.f(xs: list[LogRecord]) -> None"), {"LogRecord"}
+        )
+
+    def test_builtins_and_plain_generics_are_not_types(self) -> None:
+        self.assertEqual(
+            signatures.type_names("a.g(a: str, b: dict[str, int], c: tuple[int, bytes]) -> bool"),
+            set(),
+        )
+
+    def test_commas_inside_a_parameter_do_not_split_it(self) -> None:
+        self.assertEqual(
+            signatures.type_names("a.h(m: Mapping[str, int], k: TickRange) -> EventCursor"),
+            {"TickRange", "EventCursor"},
+        )
+
+    def test_module_paths_are_not_types(self) -> None:
+        self.assertEqual(
+            signatures.type_names("a.i(v: decimal.Decimal) -> decimal.Decimal"), set()
+        )
+
+    def test_no_parentheses_yields_nothing(self) -> None:
+        self.assertEqual(signatures.type_names(""), set())
+        self.assertEqual(signatures.type_names("a.f"), set())
+
+
+class SchemaLoadingTests(TempArchTest):
+    """`architecture/schemas/` — loading, and refusing the unusable cases."""
+
+    def test_schemas_load_keyed_by_contract_and_type(self) -> None:
+        arch = self.arch(schemas={"alpha-api": {"PoolId": {"type": "string"}}})
+        self.assertIn("alpha-api.PoolId", arch.schemas)
+        self.assertEqual(arch.schemas["alpha-api.PoolId"], {"type": "string"})
+
+    def test_a_schema_file_for_an_unknown_contract_is_refused(self) -> None:
+        # Otherwise a typo in the file name yields a schema nothing can
+        # reference, and the directory looks populated either way.
+        with self.assertRaises(ArchError) as ctx:
+            self.arch(schemas={"typo-api": {"PoolId": {"type": "string"}}})
+        self.assertIn("not defined", str(ctx.exception))
+
+    def test_a_non_mapping_schema_is_refused(self) -> None:
+        with self.assertRaises(ArchError) as ctx:
+            self.arch(schemas={"alpha-api": {"PoolId": "just a string"}})
+        self.assertIn("must be a mapping", str(ctx.exception))
+
+
+class SchemaReferenceTests(TempArchTest):
+    """`SCHEMA_DANGLING` / `SCHEMA_UNDECLARED` — the two spellings of a type name.
+
+    Before this existed, SchemaRef was an opaque string and `validate` passed
+    with 29 references pointing at nothing.
+    """
+
+    def _findings(self, arch, code):
+        return [f for f in validator.validate(arch) if f.code == code]
+
+    def _contract_with(self, capability):
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [capability]
+        return contracts
+
+    def test_explicit_ref_to_nothing_is_an_error(self) -> None:
+        arch = self.arch(
+            contracts=self._contract_with(
+                {"id": "alpha.one", "output": {"schema": "alpha-api.Nope"}}
+            )
+        )
+        found = self._findings(arch, SCHEMA_DANGLING)
+        self.assertEqual([f.context["schema"] for f in found], ["alpha-api.Nope"])
+        # A ref to nothing is not a weaker promise than a promise kept.
+        self.assertTrue(validator.has_errors(validator.validate(arch)))
+
+    def test_explicit_ref_to_a_declared_schema_is_clean(self) -> None:
+        arch = self.arch(
+            contracts=self._contract_with(
+                {"id": "alpha.one", "output": {"schema": "alpha-api.PoolId"}}
+            ),
+            schemas={"alpha-api": {"PoolId": {"type": "string"}}},
+        )
+        self.assertEqual(self._findings(arch, SCHEMA_DANGLING), [])
+
+    def test_input_and_payload_refs_are_checked_too(self) -> None:
+        arch = self.arch(
+            contracts=self._contract_with(
+                {
+                    "id": "alpha.one",
+                    "kind": "event",
+                    "payload": {"schema": "alpha-api.Missing"},
+                }
+            )
+        )
+        self.assertEqual(len(self._findings(arch, SCHEMA_DANGLING)), 1)
+
+    def test_type_named_in_a_signature_with_no_schema_warns(self) -> None:
+        arch = self.arch(
+            contracts=self._contract_with(
+                {"id": "alpha.one", "signature": "alpha.one(c: EventCursor) -> RunRecord"}
+            )
+        )
+        found = self._findings(arch, SCHEMA_UNDECLARED)
+        self.assertEqual(
+            sorted(f.context["type"] for f in found), ["EventCursor", "RunRecord"]
+        )
+        # WARNING, not ERROR: a missing shape is a real gap but the check must
+        # not turn the repository red before the shapes are filled in.
+        self.assertTrue(all(f.severity == "WARNING" for f in found))
+
+    def test_declaring_the_types_clears_the_warning(self) -> None:
+        arch = self.arch(
+            contracts=self._contract_with(
+                {"id": "alpha.one", "signature": "alpha.one(c: EventCursor) -> RunRecord"}
+            ),
+            schemas={
+                "alpha-api": {"EventCursor": {"type": "string"}, "RunRecord": {"type": "object"}}
+            },
+        )
+        self.assertEqual(self._findings(arch, SCHEMA_UNDECLARED), [])
+
+    def test_one_bare_name_declared_twice_is_ambiguous_not_resolved(self) -> None:
+        # A bare name in a signature can only be satisfied by exactly one
+        # declared type. Two owners is a collision, and picking one would be a
+        # guess dressed as a match.
+        contracts = base_contracts()
+        contracts["beta-api"] = {
+            "name": "beta-api",
+            "provides": [{"id": "beta.one", "signature": "beta.one(x: PoolId) -> int"}],
+        }
+        arch = self.arch(
+            contracts=contracts,
+            schemas={
+                "alpha-api": {"PoolId": {"type": "string"}},
+                "beta-api": {"PoolId": {"type": "string"}},
+            },
+        )
+        found = self._findings(arch, SCHEMA_AMBIGUOUS)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(
+            found[0].context["owners"], ["alpha-api.PoolId", "beta-api.PoolId"]
+        )
+        self.assertEqual(self._findings(arch, SCHEMA_UNDECLARED), [])
+
+    def test_finding_names_every_capability_mentioning_the_type(self) -> None:
+        contracts = base_contracts()
+        contracts["alpha-api"]["provides"] = [
+            {"id": "alpha.one", "signature": "alpha.one(c: EventCursor) -> int"},
+            {"id": "alpha.two", "signature": "alpha.two(c: EventCursor) -> int"},
+        ]
+        arch = self.arch(contracts=contracts)
+        found = [f for f in self._findings(arch, SCHEMA_UNDECLARED)
+                 if f.context["type"] == "EventCursor"]
+        self.assertEqual(
+            found[0].context["named_by"], ["alpha-api:alpha.one", "alpha-api:alpha.two"]
+        )
 
 
 if __name__ == "__main__":

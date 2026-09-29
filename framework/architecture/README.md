@@ -21,33 +21,49 @@ project metadata           architecture/
 |---|---|
 | `architecture/contracts/<name>.yaml` | contract 定义（公开 interface） |
 | `architecture/modules/<name>/module.yaml` | module 定义与显式依赖声明 |
+| `architecture/schemas/<contract>.yaml` | 该 contract 拥有的类型形状（JSON Schema） |
 | `modules/<name>/**` | module 的实现代码（私有） |
 | `framework/architecture/*.py` | 本框架本身 |
 
 **实现代码不是 source of truth。** 一个 module 的公开行为只由它发布的
 contract 决定；实现只能佐证，不能被读取来补足 contract 的不足。
 
+**类型名也不是 shape。** 一个 capability 有两种写法来命名它的类型：显式的
+`input`/`output`/`payload` 引用，或者 `signature:` 里的一段散文。两种以前都
+不可检查——`SchemaRef` 只是一个不透明的字符串，所以 `validate` 在 29 个引用
+指向不存在的 schema 时依然通过。现在两种都查：
+
+| code | severity | 含义 |
+|---|---|---|
+| `SCHEMA_DANGLING` | ERROR | 显式引用解析不到任何东西 |
+| `SCHEMA_UNDECLARED` | WARNING | `signature:` 里的类型名没有声明形状 |
+| `SCHEMA_AMBIGUOUS` | WARNING | 一个裸名字被两个 contract 声明，signature 无法解析 |
+
+`SCHEMA_DANGLING` 是 ERROR，因为「指向空的引用」不是比「兑现了的承诺」更弱
+的承诺——它根本不是承诺，却写得像承诺。`SCHEMA_UNDECLARED` 目前是 WARNING，
+等形状补齐后升级为 ERROR。写法与约定见 `architecture/schemas/README.md`。
+
 ## 2. Module dependency 怎么表示
 
 只存在两种边，都在 YAML 里显式声明：
 
 ```yaml
-# architecture/modules/backtest/module.yaml
-name: backtest
-provides_contracts: [backtest-api]        # 我实现哪些 contract
+# architecture/modules/robinhood-application/module.yaml
+name: robinhood-application
+provides_contracts: [robinhood-application-api]   # 我实现哪些 contract
 depends_on:
-  - contract: pricing-api                 # 我依赖哪个 contract
-    uses: [position.mark, pricing.quote]   # 我具体用它的哪些 capability
-    reason: value the simulated portfolio
+  - contract: robinhood-features-api               # 我依赖哪个 contract
+    uses: [features.position.value, features.quote.usdg]  # 我具体用它的哪些 capability
+    reason: assemble the snapshot set the strategy layer reads
 ```
 
 ```yaml
-# architecture/contracts/pricing-api.yaml
-requires: [market-data-api]               # 我建立在哪之上
+# architecture/contracts/robinhood-features-api.yaml
+requires: [robinhood-protocol-api, robinhood-replay-api]   # 我建立在哪之上
 provides:
-  - id: position.mark
-    kind: function
-    signature: "position.mark(portfolio: Portfolio, at: datetime) -> Decimal"
+  - id: features.position.value
+    kind: operation
+    signature: "features.position.value(position: PositionKey, at_tick: int) -> PositionValuation"
 ```
 
 **不存在 `module → module` 边。** module 之间只经由 contract 连通；
@@ -55,8 +71,8 @@ validator 会把直接依赖另一个 module 报成 `ILLEGAL_DEPENDENCY`。
 module 级的边是**推导**出来的（`graph.direct_module_edges`），只读，不可手写。
 
 ```
-module backtest ──uses──▶ pricing-api ◀──requires── market-data-api ◀──uses── module market-data
-                          (contract)          (contract)                     (contract)
+module robinhood-application ──uses──▶ robinhood-features-api ◀──requires── robinhood-replay-api ◀──uses── module robinhood-replay
+                                      (contract)                (contract)                    (contract)
 ```
 
 ## 3. Boundary 怎么判断
@@ -70,7 +86,19 @@ readable_extra: [...]      module.yaml 里显式授予的额外路径
 ```
 
 `architecture/**` 可读是刻意的：contract 和 module 声明**就是**公开面。
-读 `architecture/modules/pricing/module.yaml` 合法，读 `modules/pricing/*.py` 不合法。
+读 `architecture/modules/robinhood-features/module.yaml` 合法，读
+`modules/robinhood-features/valuation.py` 不合法。
+
+**一条跨模块依赖需要两半，缺一不可。** 上面 `depends_on` 说了「用哪个 contract
+的哪些 capability、为什么」，`readable_extra` 说了「这些 capability 的代码在哪个
+路径下、因此哪些文件可以 import」。只写 `depends_on` 而不写 `readable_extra`，
+依赖就是**声明了但无法执行**——第一个照契约合法 import 的开发者会撞上
+`BOUNDARY_VIOLATION`，而契约说他有权读。
+
+约定是：每个提供 contract 的模块把公开面放在 `modules/<self>/api/**`，消费方
+逐条授予 `modules/<provider>/api/**`。validator 会拒绝任何覆盖到别的模块**根
+目录**的授权（`modules/<other>/x.py` 必须匹配不上），所以这个约定是被检查的，
+不是靠自觉。
 
 不可读：其他任何 module 的实现、`framework/**`（方向反了——是 framework 调用
 module）、仓库外的路径。
@@ -120,16 +148,16 @@ diff 得到 changed contract 集合（以及是否 breaking：删除 capability 
 
 ```bash
 # Q1 能看什么
-archctl readable backtest
-archctl check-paths backtest modules/pricing/engine.py
+archctl readable robinhood-application
+archctl check-paths robinhood-application modules/robinhood-features/valuation.py
 
 # Q2 能依赖什么
-archctl depends backtest
-archctl consumers pricing-api
+archctl depends robinhood-application
+archctl consumers robinhood-features-api
 
 # Q3 改了谁受影响
-archctl impact pricing-api
-archctl impact market-data-api --capability series.get
+archctl impact robinhood-features-api
+archctl impact robinhood-protocol-api --capability protocol.sizing.compute
 
 # 图与校验
 archctl graph
@@ -143,10 +171,10 @@ Python 调用（未来的 workflow 会走这个）：
 from framework.architecture import load, query
 
 arch = load()
-query.readable(arch, "backtest")            # Q1
-query.dependencies(arch, "backtest")       # Q2
-query.blast_radius(arch, "pricing-api")    # Q3
-query.check_paths(arch, "backtest", paths) # Q1 应用到具体路径
+query.readable(arch, "robinhood-application")            # Q1
+query.dependencies(arch, "robinhood-application")       # Q2
+query.blast_radius(arch, "robinhood-features-api")     # Q3
+query.check_paths(arch, "robinhood-application", paths) # Q1 应用到具体路径
 query.validation_report(arch)              # CI gate
 ```
 

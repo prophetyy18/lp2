@@ -29,6 +29,21 @@ ERROR = "ERROR"
 WARNING = "WARNING"
 INFO = "INFO"
 
+# --- declared type shapes ---------------------------------------------------
+#
+# Three distinct problems, kept apart because they need different fixes and
+# have different consequences.
+#
+# A capability can name its types two ways: an explicit `input`/`output`/
+# `payload` ref, or bare type names inside a free-text `signature:`. Only the
+# first was ever checked, and it was not checked at all — SchemaRef was an
+# opaque string, so `archctl validate` passed with 29 refs pointing at schemas
+# that did not exist. A ref to nothing is not a weaker promise than a promise
+# kept; it is no promise, stated as though it were one.
+SCHEMA_DANGLING = "SCHEMA_DANGLING"      # ERROR: an explicit ref with no schema
+SCHEMA_UNDECLARED = "SCHEMA_UNDECLARED"  # WARNING: a signature names an undeclared type
+SCHEMA_AMBIGUOUS = "SCHEMA_AMBIGUOUS"    # WARNING: one bare name, two owning contracts
+
 
 @dataclass(frozen=True)
 class Finding:

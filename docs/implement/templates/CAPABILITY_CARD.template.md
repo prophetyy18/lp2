@@ -13,8 +13,9 @@ Copy this file to `docs/implement/<module>/<capability>.card.md` and fill in.
 - output schema: <contract>.<name>      # ref only
 - payload schema: <contract>.<name>     # only when kind=event
 - behavior:
-   unit: <usdg | q64_64 | wei | block_height | seconds | symbol | decimal | bytes | address>
+   unit: <usdg | q64_96 | q128_128 | wei | block_height | seconds | symbol | decimal | bytes | address | tick | liquidity | token_base_unit>
    time:  <event_time | wall_clock>
+   timezone: <tz_aware_utc | naive_utc | naive_local>
    idempotent: <bool>
    ordering: <total | partial | none>
    stale_tolerance: <human readable, optional>

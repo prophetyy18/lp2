@@ -29,10 +29,46 @@ CAPABILITY_KINDS: tuple[str, ...] = ("operation", "event", "data")
 
 # Behavior.unit is a controlled vocabulary. Empty string means "not specified";
 # the loader rejects empty if the field is present at all.
+#
+# Extended 2026-09-29 (Owner-approved) for the Uniswap V4 fixed-point and
+# index vocabulary this system actually speaks: sqrtPriceX96, feeGrowthX128,
+# the int24 tick index, pool liquidity, and raw token base units.
+#
+# Known tension, recorded rather than hidden: this tuple mixes three different
+# kinds of thing — magnitudes (`usdg`, `wei`, `liquidity`), fixed-point
+# *encodings* (`q64_96`, `q128_128`), and non-units (`symbol`, `tick`).
+# (Earlier drafts of this comment cited a `q64_128`; no such encoding exists.)
+# An encoding is arguably a schema-level property rather than a magnitude, and
+# `tick` is an index. The vocabulary was already mixed before this change; the
+# change adds to an existing pattern rather than creating one. Splitting
+# `behavior.unit` into `unit` + `encoding` is a framework change and needs
+# Owner sign-off, so it is not done here.
+#
+# The two encodings are here because V4 has exactly these two, and the
+# contracts name both by their on-chain spelling:
+#
+#     q64_96     sqrtPriceX96          uint160, 96 fractional bits
+#               FixedPoint96.Q96  = 2**96   (SqrtPriceMath, TickMath, IPoolManager)
+#
+#     q128_128   feeGrowthGlobal0X128 uint256, 128 fractional bits
+#               FixedPoint128.Q128 = 2**128  (Pool.sol, Position.sol)
+#
+# There is deliberately no `q64_64` and no `q64_128`. An earlier draft of this
+# tuple carried both. Neither exists in V4 — verified by grepping the whole of
+# v4-core/src: the only `2**64` in the repository is a comment in FullMath about
+# modular-inverse arithmetic, not a value type. `q64_96` and `q128_128` are the
+# complete set.
+#
+# A controlled vocabulary entry that names a nonexistent encoding is worse than
+# a missing one: the loader would accept the unit, and no code would know what
+# it meant. Anything fixed-point this system needs beyond these two belongs in a
+# schema's `x-encoding`, where it is checked against a source instead of
+# against this list.
 BEHAVIOR_UNITS: tuple[str, ...] = (
     "",
     "usdg",
-    "q64_64",
+    "q64_96",
+    "q128_128",
     "wei",
     "block_height",
     "seconds",
@@ -40,6 +76,14 @@ BEHAVIOR_UNITS: tuple[str, ...] = (
     "decimal",
     "bytes",
     "address",
+    "tick",
+    "liquidity",
+    # Deliberately NOT one entry per token. Each token has its own decimals, so
+    # "raw token unit" is not a single unit; and naming a token here (usdg,
+    # usdc, ...) would freeze an unverified decimals assumption into the
+    # vocabulary, which AGENTS.md §4 forbids. If per-token precision is ever
+    # needed, it belongs in the schema, where it can be read from chain state.
+    "token_base_unit",
 )
 
 # Behavior.time: which clock does the capability's time-bearing fields use?
@@ -47,6 +91,30 @@ BEHAVIOR_TIME: tuple[str, ...] = ("", "event_time", "wall_clock")
 
 # Behavior.ordering: how are repeated deliveries of the same logical event ordered?
 BEHAVIOR_ORDERING: tuple[str, ...] = ("", "total", "partial", "none")
+
+# Behavior.timezone: does a returned time value carry its UTC offset, and which?
+#
+# Separate from `time` on purpose, though they sit next to each other and are
+# easy to conflate. `time` says which clock the capability's timestamps refer
+# to -- event time or wall clock. `timezone` says what shape the values a
+# caller receives are in: a `2024-01-02T21:00+00:00` and a bare
+# `2024-01-02 16:00` denote the same instant and a consumer cannot tell them
+# apart without knowing which one it was handed. That is the "same schema,
+# different understanding across providers" failure `behavior` exists to
+# prevent, and it is the one a consumer hits first.
+BEHAVIOR_TIMEZONES: tuple[str, ...] = ("", "tz_aware_utc", "naive_utc", "naive_local")
+
+# The complete set of keys a `behavior:` block may carry. The loader refuses
+# anything outside it rather than ignoring it.
+#
+# It used to ignore them, which meant a contract could assert anything at all
+# in a behavior block -- `timezone: tz_aware_utc` parsed cleanly, appeared in
+# no `to_dict`, and `archctl validate` reported the architecture valid. A
+# silently discarded key is worse than a rejected one: the file says the
+# contract promised something, the tooling agrees, and nothing was promised.
+BEHAVIOR_FIELDS: frozenset[str] = frozenset(
+    {"unit", "time", "timezone", "idempotent", "ordering", "stale_tolerance"}
+)
 
 # ErrorCode.recoverable: hint for retry / circuit-breaker policy.
 RECOVERABLE_KINDS: tuple[str, ...] = ("transient", "permanent", "user_input")
@@ -101,6 +169,7 @@ class BehaviorTag:
 
     unit: str = ""
     time: str = ""
+    timezone: str = ""
     idempotent: bool | None = None
     ordering: str = ""
     stale_tolerance: str = ""
@@ -111,6 +180,8 @@ class BehaviorTag:
             out["unit"] = self.unit
         if self.time:
             out["time"] = self.time
+        if self.timezone:
+            out["timezone"] = self.timezone
         if self.idempotent is not None:
             out["idempotent"] = self.idempotent
         if self.ordering:
@@ -226,6 +297,12 @@ class Architecture:
     root: str
     contracts: dict[str, Contract] = field(default_factory=dict)
     modules: dict[str, Module] = field(default_factory=dict)
+    # Declared type shapes, keyed "<contract>.<TypeName>" — the same spelling a
+    # contract's `input`/`output`/`payload` uses. Loaded from
+    # architecture/schemas/<contract>.yaml, whose top level maps a TypeName to
+    # a JSON Schema (draft 2020-12), extended with `x-` keywords for the parts
+    # JSON Schema cannot say — V4 fixed-point encodings, on-chain widths.
+    schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def module(self, name: str) -> Module:
         from .errors import ArchError, UNKNOWN_MODULE
@@ -251,4 +328,5 @@ class Architecture:
         return {
             "contracts": {n: c.to_dict() for n, c in sorted(self.contracts.items())},
             "modules": {n: m.to_dict() for n, m in sorted(self.modules.items())},
+            "schemas": {k: self.schemas[k] for k in sorted(self.schemas)},
         }

@@ -1,0 +1,60 @@
+# Declared shapes owned by robinhood-signer-api.
+#
+# Only the types this contract's own prose fully determines. See README.md.
+#
+# Note what is absent: SignRequest, SignedTransaction and LockStateRequest are
+# all referenced by capabilities here but not declared, and that is a real gap
+# rather than an oversight. Signing is the one place in this architecture where
+# the shape decides a security property — what is signed, and by which key —
+# so those are Architecture Designer decisions, not ones to settle by writing
+# down a plausible guess.
+
+LockState:
+  description: >
+    Whether this signer can sign right now. LOCKED when no key is available,
+    UNLOCKED when one is.
+  type: string
+  enum: [LOCKED, UNLOCKED]
+  x-note: >
+    Two states, and the contract names both: "UNLOCKED when a key is
+    available for signing; LOCKED otherwise." There is no third state for
+    "degraded" or "unknown" — a signer that cannot say whether it can sign
+    must say LOCKED, because the execution layer's rule is to refuse on
+    LOCKED, and an UNKNOWN that is not in this enum cannot be refused
+    against. Adding a value is additive; renaming or removing one is
+    breaking.
+  x-source: robinhood-signer-api signer.lock_state description
+
+LockStateVocabulary:
+  description: >
+    The complete set of LockState values, published so a consumer can be
+    written against the whole set rather than the one value it has seen.
+  type: array
+  minItems: 1
+  uniqueItems: true
+  items:
+    type: string
+    enum: [LOCKED, UNLOCKED]
+  x-note: >
+    Must enumerate every value of LockState. A vocabulary that lags its own
+    type is worse than none: a consumer written against it can handle a value
+    the signer can actually return, or appear to and fail on it.
+  x-source: robinhood-signer-api signer.lock_state_vocabulary description
+
+PublicAddressRequest:
+  description: Which key's public address to return.
+  type: object
+  additionalProperties: false
+  required: [key_id]
+  properties:
+    key_id:
+      description: >
+        Names a key in the encrypted Keystore. Not the address itself — the
+        address is what this call returns, so asking for it by address would
+        make the call circular.
+      type: string
+      minLength: 1
+  x-note: >
+    One field, from the capability's own words: "Return the Address derived
+    from the public component of the named key."
+  x-source: robinhood-signer-api signer.public_address description

@@ -13,6 +13,8 @@ Invariant list, in the order a mistake usually appears:
   6. `readable_extra` never reaches into another module's tree   -> BOUNDARY_VIOLATION
   7. no duplicate capability ids inside a contract
   8. hygiene warnings: consumers that itemise no `uses`, contracts nobody uses
+  9. every `input`/`output`/`payload` schema ref resolves        -> SCHEMA_DANGLING
+ 10. every type named in a `signature` has a declared shape      -> SCHEMA_UNDECLARED
 """
 
 from __future__ import annotations
@@ -25,13 +27,17 @@ from .errors import (
     ERROR,
     ILLEGAL_DEPENDENCY,
     INFO,
+    SCHEMA_AMBIGUOUS,
+    SCHEMA_DANGLING,
+    SCHEMA_UNDECLARED,
     UNITEMISED_USES,
     UNKNOWN_CONTRACT,
     WARNING,
     Finding,
 )
 from .graph import consumers, owners
-from .model import Architecture, Module
+from .model import Architecture, Capability, Module, SchemaRef
+from .signatures import bare_name_index, type_names
 
 
 def validate(arch: Architecture) -> list[Finding]:
@@ -42,6 +48,7 @@ def validate(arch: Architecture) -> list[Finding]:
     findings += _check_module_edges(arch)
     findings += _check_cycles(arch)
     findings += _check_readable_extra(arch)
+    findings += _check_schemas(arch)
     findings += _check_hygiene(arch)
     return findings
 
@@ -252,6 +259,103 @@ def _check_readable_extra(arch: Architecture) -> list[Finding]:
                         )
                     )
     return out
+
+
+def _check_schemas(arch: Architecture) -> list[Finding]:
+    """Do the types this architecture names actually have shapes?
+
+    Two spellings, checked separately because they mean different things when
+    they fail.
+
+    An explicit `{schema: <contract>.<Type>}` ref is a direct claim that this
+    is where the type lives. If nothing is there, the ref is a lie and no
+    severity below ERROR is honest — a consumer that follows it has nowhere to
+    go, and the only way the architecture could have passed before is that
+    nobody ever resolved the string.
+
+    A bare name in a `signature:` is weaker: the prose may simply have missed
+    the schema. That is still a real gap — a tester cannot state an expected
+    value for a type with no fields, and two developers can both be "right"
+    about what `RunRecord` holds — so it is reported, but at WARNING until the
+    declared shapes are filled in. Promoting it to ERROR is the signal that
+    the gap is closed, and it belongs to whoever owns that call, not to me.
+    """
+    out: list[Finding] = []
+    index = bare_name_index(arch.schemas)
+
+    dangling: dict[str, set[str]] = {}
+    undeclared: dict[str, set[str]] = {}
+
+    for name in sorted(arch.contracts):
+        contract = arch.contracts[name]
+        for cap in contract.provides:
+            where = f"{name}:{cap.id}"
+            for ref, slot in _explicit_refs(cap):
+                if ref.schema not in arch.schemas:
+                    dangling.setdefault(ref.schema, set()).add(f"{where} ({slot})")
+            for type_name in sorted(type_names(cap.signature)):
+                owners_ = index.get(type_name, ())
+                if len(owners_) == 1:
+                    continue
+                if len(owners_) > 1:
+                    out.append(
+                        Finding(
+                            code=SCHEMA_AMBIGUOUS,
+                            message=(
+                                f"{where}: type `{type_name}` is declared by more "
+                                f"than one contract ({', '.join(sorted(owners_))}), "
+                                f"so a bare name in a signature cannot identify it"
+                            ),
+                            severity=WARNING,
+                            context={
+                                "contract": name,
+                                "capability": cap.id,
+                                "type": type_name,
+                                "owners": sorted(owners_),
+                            },
+                        )
+                    )
+                    continue
+                undeclared.setdefault(type_name, set()).add(where)
+
+    for ref_id in sorted(dangling):
+        out.append(
+            Finding(
+                code=SCHEMA_DANGLING,
+                message=(
+                    f"schema `{ref_id}` is referenced but not declared; declare it "
+                    f"in architecture/schemas/{ref_id.rpartition('.')[0]}.yaml or "
+                    f"change the reference"
+                ),
+                severity=ERROR,
+                context={"schema": ref_id, "referenced_by": sorted(dangling[ref_id])},
+            )
+        )
+
+    for type_name in sorted(undeclared):
+        out.append(
+            Finding(
+                code=SCHEMA_UNDECLARED,
+                message=(
+                    f"type `{type_name}` is named in a capability signature but has "
+                    f"no declared shape; a tester cannot state an expected value "
+                    f"for a type whose fields are undeclared"
+                ),
+                severity=WARNING,
+                context={"type": type_name, "named_by": sorted(undeclared[type_name])},
+            )
+        )
+
+    return out
+
+
+def _explicit_refs(cap: Capability) -> list[tuple[SchemaRef, str]]:
+    refs = [
+        (cap.input, "input"),
+        (cap.output, "output"),
+        (cap.payload, "payload"),
+    ]
+    return [(ref, slot) for ref, slot in refs if ref is not None]
 
 
 def _check_hygiene(arch: Architecture) -> list[Finding]:
