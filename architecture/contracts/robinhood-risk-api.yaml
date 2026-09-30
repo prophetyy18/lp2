@@ -32,12 +32,21 @@ provides:
       it.
   - id: risk.factors
     kind: data
-    output: { schema: robinhood-risk-api.RiskFactorList }
+    signature: "risk.factors() -> RiskFactorList"
     description: >
       Closed vocabulary of risk factor names the gateway can reason over.
       A reason code returned by `risk.evaluate` is one of these names, or
       one of the gateway's own verdicts. This is a contract extension point,
       so adding a name here requires a contract version bump.
+
+      The names have never been enumerated, which is why RiskFactorList is
+      named in the signature above and has no declared shape. An array of
+      unconstrained strings would resolve the reference and say nothing: the
+      whole content of this capability is which names are in the set, and a
+      schema that accepts any string does not carry that. Nor can the version
+      bump above be checked yet, because there is no list to diff a new name
+      against. Enumerating the factors is a decision, and until it is made this
+      capability is a promise about a set nobody has written down.
 
       Migrated from `pricing-api.position.risk_factors` when pricing-api was
       retired on 2026-09-29. It moved rather than being deleted because it is

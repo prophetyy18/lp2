@@ -13,8 +13,7 @@ requires:
 provides:
   - id: signer.sign
     kind: operation
-    input:  { schema: robinhood-signer-api.SignRequest }
-    output: { schema: robinhood-signer-api.SignedTransaction }
+    signature: "signer.sign(request: SignRequest) -> SignedTransaction"
     errors:
       - { code: SIGNER_LOCKED,             recoverable: user_input }
       - { code: SIGNER_UNKNOWN_KEY_ID,     recoverable: user_input }
@@ -31,6 +30,24 @@ provides:
       only module that accepts the password. The signer is locked on
       restart.
 
+      SignRequest and SignedTransaction are named in the signature above and
+      declared nowhere. What gets signed, and under which key, is a security
+      property, so the field list is an Owner decision rather than something
+      this contract may fill in with a plausible guess; until it is made, the
+      honest state is a type with no shape, which `validate` keeps reporting
+      as SCHEMA_UNDECLARED. Why the two are named here and not as an
+      `input:`/`output:` ref is in architecture/schemas/robinhood-signer-api.yaml.
+
+      The capability is also, as declared, unreachable: nothing in this
+      architecture consumes a signed transaction. `robinhood-rpc-api`'s
+      method set excludes broadcasting by name ("no signing, no
+      broadcasting"), and no contract submits a transaction — the reduce-only
+      path stops at the risk gateway. Whether `signer.sign` belongs in V1 is
+      therefore an open decision, recorded here rather than assumed; the
+      method is in docs/design/DECLARATION-PROVENANCE.md. The `uses:` entries
+      naming it are declarations rather than uses — `robinhood-application`
+      lists two signer capabilities and names neither in any signature.
+
   - id: signer.lock_state
     kind: operation
     input:  { schema: robinhood-signer-api.LockStateRequest }
@@ -45,6 +62,9 @@ provides:
       Return the current LockState. UNLOCKED when a key is available
       for signing; LOCKED otherwise. The execution layer must refuse
       to submit an unsigned payload when the state is LOCKED.
+
+      Takes no argument — the lock belongs to the process, not to a key, and
+      the request type says so by refusing every field.
 
   - id: signer.public_address
     kind: operation

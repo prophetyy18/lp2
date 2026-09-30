@@ -2,12 +2,23 @@
 #
 # Only the types this contract's own prose fully determines. See README.md.
 #
-# Note what is absent: SignRequest, SignedTransaction and LockStateRequest are
-# all referenced by capabilities here but not declared, and that is a real gap
-# rather than an oversight. Signing is the one place in this architecture where
-# the shape decides a security property — what is signed, and by which key —
-# so those are Architecture Designer decisions, not ones to settle by writing
-# down a plausible guess.
+# Note what is absent: SignRequest and SignedTransaction. Signing is the one
+# place in this architecture where the shape decides a security property —
+# what is signed, and by which key — so those two are Architecture Designer
+# decisions, not ones to settle by writing down a plausible guess.
+#
+# They are named in `signer.sign`'s prose signature rather than in an
+# `input:`/`output:` ref for a reason beyond their own: the contract's promise
+# and what validate reports have to agree. An explicit ref says "this is where
+# the type lives", and nothing is there — that is SCHEMA_DANGLING, an ERROR,
+# because a ref to nothing is not a weaker promise than a promise kept. A prose
+# name says "somebody uses this name and nobody has written its fields down",
+# which is exactly true and is already a finding (SCHEMA_UNDECLARED). Declaring
+# a placeholder here instead would have silenced that finding and made an
+# undeclared type look declared, which README.md calls the worse outcome.
+#
+# LockStateRequest was in that group and is not any more: its shape is settled
+# by the capability's own words. See below.
 
 LockState:
   description: >
@@ -40,6 +51,33 @@ LockStateVocabulary:
     type is worse than none: a consumer written against it can handle a value
     the signer can actually return, or appear to and fail on it.
   x-source: robinhood-signer-api signer.lock_state_vocabulary description
+
+LockStateRequest:
+  description: >
+    Input to `signer.lock_state`. Carries no field: the lock is a property of
+    the signer process, not of a key.
+  type: object
+  additionalProperties: false
+  maxProperties: 0
+  x-note: >
+    An empty object, and the refusal is the content — a caller that passes a
+    key_id is rejected rather than ignored, so "lock_state takes no argument"
+    is something a tester can assert instead of something it has to infer.
+    Two phrases in this contract fix the granularity. `signer.lock_state` says
+    "the current LockState", where its sibling `signer.public_address` says
+    "the Address derived from the public component of the named key"; and
+    LockState's own two states are "no key is available" / "one is", not "the
+    named key is available". The signer also holds one Keystore and takes one
+    password, and is locked on restart — a process-level event, not a
+    per-key one.
+  x-note-per-key: >
+    The reading this schema rules out is per-key lock state, and it is the
+    reading that would break the consumer. `robinhood-execution` must refuse
+    to submit an unsigned payload when the state is LOCKED; under a per-key
+    model that check reports on whether the process holds keys, and can pass
+    while the key that is about to sign does not. If a second key ever needs
+    a second lock, this becomes a field, which is an additive change.
+  x-source: robinhood-signer-api signer.lock_state description
 
 PublicAddressRequest:
   description: Which key's public address to return.

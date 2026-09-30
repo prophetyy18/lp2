@@ -90,8 +90,7 @@ provides:
 
   - id: protocol.sizing.compute
     kind: operation
-    input:  { schema: robinhood-protocol-api.SizingRequest }
-    output: { schema: robinhood-protocol-api.SizingDecision }
+    signature: "protocol.sizing.compute(request: SizingRequest) -> SizingDecision"
     errors:
       - { code: PROTOCOL_RANGE_DEGENERATE,       recoverable: user_input }
       - { code: PROTOCOL_TICK_OUT_OF_BOUNDS,     recoverable: user_input }
@@ -110,6 +109,23 @@ provides:
       reservation, both raw-token caps after Hook/Gas effects, and the
       minimum-economic-size floor. The sizer never widens the Range to
       fit a cap.
+
+      SizingRequest and SizingDecision are named above and declared nowhere,
+      and the reason is not an omission: four things this capability enforces have no
+      source anywhere in this architecture. The capital the sizer sizes
+      against, the two raw-token caps it enforces (PROTOCOL_CAPITAL_EXCESSIVE),
+      the minimum-economic-size floor (PROTOCOL_BELOW_MINIMUM_SIZE), and the
+      measured Hook BalanceDeltas it must verify (PROTOCOL_HOOK_EVIDENCE_MISSING)
+      all have to arrive from somewhere, and no contract supplies them. That is
+      why the field list is an Owner decision and not a schema.
+
+      It is also why this module's `depends_on: []` is right. The other six
+      capabilities here are pure functions of values the caller hands over, so
+      there is nothing to depend on. If the answer to the sizing gap turned out
+      to be "a cap table owned by another module", then `depends_on: []` would
+      become wrong the moment that table appeared — but no contract publishes
+      one today, and adding an edge to a contract that does not exist would be
+      a declaration with no consumer.
 
   - id: protocol.sizing.error_vocabulary
     kind: data
