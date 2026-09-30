@@ -1,9 +1,10 @@
 # CLAUDE.md
 
+@AGENTS.md
+
 **What to do in this repository, and how work is routed here.** The
 constraints that hold regardless — module isolation, external facts, the
-interpreter, the authority order — are in `AGENTS.md`, which is loaded beside
-this file as project instructions and inherited by every subagent. They are
+interpreter, the authority order — are in `AGENTS.md`, imported above. They are
 not repeated below; a rule stated in both files is a rule that will drift.
 
 Normal development happens **inside** the architecture that is already
@@ -50,22 +51,18 @@ Isolation bounds what you may read **in this repository**. It does not bound
 what you may know — public documentation cannot tell you what a Card in this
 repo says, so reading it cannot leak the answer you are being measured on.
 
-> **`AGENTS.md` is inert until this is set, and this repository cannot set
-> it.** The default mode, `claude-md-or-agents-md`, reads `AGENTS.md` only
-> where the project has no `CLAUDE.md` — and this project has one. Every
-> constraint in that file is currently in your context because of a change to
-> a file outside the repository:
+> **`AGENTS.md` reaches you through the `@AGENTS.md` import at the top of this
+> file.** An earlier version of this note pointed at a user-level plugin
+> setting instead; no such plugin exists, so those constraints were in no
+> context at all. Two things follow, both measured rather than assumed:
 >
-> ```json
-> // ~/.claude/settings.json — user level only; project and local settings
-> // are ignored for this key
-> { "pluginConfigs": { "agents-md": { "options": {
->     "instructionFiles": "claude-md-and-agents-md" } } } }
-> ```
->
-> Verify with `/context` **after** restarting — a session that started without
-> it will not pick it up. If you are reading this and the isolation rules feel
-> unfamiliar, that is why: they were never loaded until just now.
+> - **A subagent that receives this file receives `AGENTS.md` with it.** A
+>   `general-purpose` subagent does. The built-in `Explore` agent receives
+>   neither this file nor a `git status` snapshot, so a dispatch that relies on
+>   inherited rules must name the subagent type it needs.
+> - **Verify after restarting.** The import is read when the session's
+>   instructions are assembled; a session already running will not pick it up.
+>   `/context` shows what actually loaded.
 
 ## When to stop and use the Architecture Designer role
 
