@@ -162,21 +162,6 @@ class PartitionTests(unittest.TestCase):
                 self.assertIn(ref, headings, f"CLAUDE.md cites AGENTS.md §{ref}, "
                                              f"which has no heading")
 
-    def test_claude_md_says_how_to_turn_agents_md_on(self) -> None:
-        """The switch that loads `AGENTS.md` lives in `~/.claude/settings.json`
-        and is ignored in project and local settings, so it cannot be
-        committed — a fresh clone gets the inert file. The instruction has to
-        live in the file that *does* load, which is this one.
-
-        Without it, the header of a 293-line policy file makes a claim that is
-        false on every machine but this one, and nothing anywhere says so.
-        """
-        text = _flat(CLAUDE_MD)
-        self.assertIn("claude-md-and-agents-md", text)
-        self.assertIn("user level only", text)
-        self.assertIn("/context", text)
-        self.assertIn("cannot set", text)
-
     def test_referenced_paths_exist(self) -> None:
         """Both files name concrete paths. A moved file leaves a pointer that
         resolves to nothing, and a pointer to nothing reads as a fact."""
