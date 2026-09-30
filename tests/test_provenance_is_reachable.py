@@ -17,8 +17,15 @@ structure check and not a behavioural one.
 from __future__ import annotations
 
 import re
+import tempfile
 import unittest
 from pathlib import Path
+
+from framework.architecture.tests.fixtures import (
+    base_contracts,
+    base_modules,
+    write_tree,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 CLAUDE_MD = ROOT / "CLAUDE.md"
@@ -83,17 +90,49 @@ class MethodReachabilityTests(unittest.TestCase):
         """The method claims two of its checks are mechanical and therefore
         run by `validate` on every change. If those findings stop being
         reported, the claim is false and the method is overstating itself.
+
+        Fed a synthetic architecture, not this repository. What is under test
+        is the checker, and the checker's job does not depend on whether the
+        repository currently has anything to find — reading the real tree
+        would make the two questions one, and this repository having zero
+        dangling refs is a *good* state that would have to be undone to make
+        the assertion true.
         """
         from framework.architecture import validator
         from framework.architecture.loader import load
         from framework.architecture.errors import SCHEMA_DANGLING
 
-        codes = {f.code for f in validator.validate(load(ROOT))}
-        self.assertIn(
-            SCHEMA_DANGLING, codes,
-            "the method says a dangling schema ref is caught automatically; "
-            "it is not being caught any more",
-        )
+        def dangling_refs(arch) -> list:
+            return [f for f in validator.validate(arch) if f.code == SCHEMA_DANGLING]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            # 1: a ref that resolves to nothing must be reported.
+            contracts = base_contracts()
+            contracts["alpha-api"]["provides"] = [
+                {"id": "alpha.one", "output": {"schema": "alpha-api.Nope"}}
+            ]
+            write_tree(root, contracts, base_modules())
+            found = dangling_refs(load(root))
+            self.assertEqual(
+                [f.context["schema"] for f in found], ["alpha-api.Nope"],
+                "the method says a dangling schema ref is caught automatically; "
+                "it is not being caught any more",
+            )
+
+            # 0: the same ref against a declared schema must be silent, or the
+            # check is a permanent ERROR and `validate` can never go green.
+            contracts = base_contracts()
+            contracts["alpha-api"]["provides"] = [
+                {"id": "alpha.one", "output": {"schema": "alpha-api.PoolId"}}
+            ]
+            write_tree(root, contracts, base_modules(),
+                       schemas={"alpha-api": {"PoolId": {"type": "string"}}})
+            self.assertEqual(
+                dangling_refs(load(root)), [],
+                "a ref to a declared schema is reported as dangling",
+            )
 
     def test_no_role_document_points_at_a_method_that_moved(self) -> None:
         """Any role that names a doc under docs/design/ must name one that

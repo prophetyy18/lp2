@@ -84,4 +84,123 @@ contracts:
       # "this is the V4 PoolManager" as confirmed-at-this-block, and re-verify
       # by behaviour (an Initialize event, a Swap event) before depending on
       # it.
+      #
+      # RE-VERIFIED 2026-09-30 at a different block, independently, by the
+      # design that replaced the event set in `robinhood-rpc-api`. The code
+      # hash above still matches, so the deployment has not changed under this
+      # file.
+    reverification:
+      - fact: >
+          the five PoolManager event topic0 values are keccak256 over signatures
+          in which PoolId is ABI-typed `bytes32`, and each is a PUSH32 immediate
+          in the runtime bytecode at this address
+        method: eth_getCode + local keccak256 recomputation + PUSH32 immediate scan
+        endpoint: https://rpc.mainnet.chain.robinhood.com
+        chain_id: 4663
+        block: "0x48b6c31"
+        block_hash: "0x7e5a524dc66f3ed9b2519468651a5d11b470eaca63ca63479b2934322e6275d0"
+        retrieved_at: 2026-09-30T04:55:43Z
+        result: >
+          24009 bytes, keccak256 identical to `runtime_code_hash` above. All
+          five topic0 values were recomputed locally from their signature
+          strings and match the values published in `robinhood-rpc-api`; each
+          occurs exactly once as a PUSH32 immediate. The five v4-core `main`
+          signatures, where PoolId is ABI-typed `address`, are absent from the
+          bytecode and returned 0 logs over five 50000-block windows in which
+          the bytes32 set returned logs. That PoolId is `bytes32` here is
+          settled independently of the topic0 values: decoding an observed
+          `Initialize` log and recomputing keccak256(abi.encode(PoolKey))
+          reproduces its `topics[1]` exactly.
+      - fact: this address emits events beyond those five
+        method: PUSH32 immediate scan + eth_getLogs
+        endpoint: https://rpc.mainnet.chain.robinhood.com
+        chain_id: 4663
+        block: "0x48b9e3f"
+        retrieved_at: 2026-09-30T05:20:00Z
+        result: >
+          `Transfer(address,address,address,uint256,uint256)` =
+          0x1b3d7edb2e9c0b0e7c525b20aaaef0f5940d2ed71663c7d39266ecafac728859
+          (4 topics; ERC-6909 id+amount) was observed in every sampled window.
+          An unidentified 0xceb576d9f15e4e200fdb5096d64d5dfd667e16def20c1eefd14256d8e3faa267
+          (3 topics, 2 occurrences in ~480000 blocks) was observed too. Neither
+          carries a pool id. UNKNOWN what the second one is: none of 33
+          candidate signatures hashes to it.
+      - fact: ProtocolFeeUpdated fires on this chain
+        method: eth_getLogs with the topic0 filter alone
+        endpoint: https://rpc.mainnet.chain.robinhood.com
+        chain_id: 4663
+        block: "0x48b8cab"
+        retrieved_at: 2026-09-30T05:22:00Z
+        result: >
+          41372 occurrences across 1220 distinct blocks spanning 0x402776e to
+          0x48b87cc. An earlier Design Blocker recorded this event as UNKNOWN
+          because ten 40-block windows at stride 0x4000 returned zero; that
+          sampling shape covers 0.24% of the span it was taken over, and
+          re-running the same ten windows reproduced the zero. The event is
+          common, and its absence from a sample is a fact about the sample.
+
+# ---------------------------------------------------------------------------
+# What the RPC endpoint will and will not answer, measured.
+#
+# These live here rather than in the contract because they are facts about ONE
+# host at ONE moment, and the contract must not freeze them: the state window
+# below moved between two sweeps taken the same afternoon. `robinhood-rpc-api`
+# therefore promises a shape of failure and lets `rpc.adapter.capability_probe`
+# measure the number at runtime.
+# ---------------------------------------------------------------------------
+endpoint_facts:
+  - fact: eth_call cannot serve a `finalized` block on this endpoint
+    method: eth_call at tag `finalized`, owner() as the call
+    endpoint: https://rpc.mainnet.chain.robinhood.com
+    chain_id: 4663
+    block: "0x48b76f1"
+    retrieved_at: 2026-09-30T04:59:00Z
+    result: >
+      -32000 "historical state ... is not available". `safe`, `latest` and
+      `pending` all answer. So a `finalized` tag is not a usable block_ref for
+      a call here, even though `eth_getBlockByNumber("finalized")` resolves
+      that block's number and hash without trouble — the block is known, its
+      state is not served.
+  - fact: historical state retention is a rolling window whose edge is not stable
+    method: eth_call at head-N, swept repeatedly over ~30 minutes
+    endpoint: https://rpc.mainnet.chain.robinhood.com
+    chain_id: 4663
+    block: "0x48b8abf"
+    retrieved_at: 2026-09-30T05:12:00Z
+    result: >
+      Readable to roughly head-6000 and failing by head-6500 in one sweep;
+      head-5000 failed in an earlier sweep and succeeded in a later one at a
+      later head. Probing ONE fixed block ten times returned OK seven times and
+      then -32000 twice. The edge is therefore neither a constant offset from
+      head nor a deterministic function of the block number — availability is a
+      property of the serving node at request time. No number of blocks can be
+      written into a contract as the boundary, because it was already wrong
+      twice on the afternoon it was measured.
+  - fact: header retention is far wider than state retention
+    method: eth_getBlockByNumber by number and by tag
+    endpoint: https://rpc.mainnet.chain.robinhood.com
+    chain_id: 4663
+    block: "0x48ba191"
+    retrieved_at: 2026-09-30T05:31:00Z
+    result: >
+      Headers served at head-20000000, and `finalized`, `safe`, `latest` and
+      `pending` all resolved. So a block header is readable far outside the
+      window a call is readable in, and the two capabilities do not share a
+      horizon. This is why loosening `rpc.adapter.call` does not oblige
+      `rpc.adapter.block_header` to change.
+  - fact: log retention is far wider than state retention
+    method: eth_getLogs with a single topic0 filter
+    endpoint: https://rpc.mainnet.chain.robinhood.com
+    chain_id: 4663
+    block: "0x48b8abf"
+    retrieved_at: 2026-09-30T05:14:00Z
+    result: >
+      ProtocolFeeUpdated logs served from head-1000000 (7290 of them) and from
+      as far back as block 0x402776e; Swap logs served from head-100000. So a
+      range `rpc.adapter.logs` can serve is not a range `rpc.adapter.call`
+      can, and a replay that fetches a wide log range then reads state across
+      it will hit the state window partway through. Swap did NOT come back
+      from head-1000000 — that query hit the 10000-result cap, which is a
+      result-count limit and not a retention limit, so it says nothing about
+      how far back Swap goes either way.
 

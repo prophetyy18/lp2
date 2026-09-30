@@ -1,5 +1,5 @@
 name: robinhood-rpc-api
-version: 2
+version: 3
 description: >
   Bounded JSON-RPC adapter. The only RPC surface V1 exposes is the
   closed method set in T020 (eth_blockNumber, eth_getBlockByNumber,
@@ -13,28 +13,73 @@ provides:
   - id: rpc.adapter.block_header
     kind: operation
     signature: "rpc.adapter.block_header(chain_id: ChainId, block_ref: BlockRef) -> BlockHeader"
-    description: >
+    description: |
       Fetch one non-hydrated block header by number or hash. Bounded
       retry on 429 / 5xx / timeout only; no retry on malformed params.
+
+      This capability shares `BlockRef` with `rpc.adapter.call` and nothing
+      else with it. A header is served far outside the window a call is
+      served in — headers resolved at head-20000000 on the measured endpoint,
+      and `finalized` / `safe` / `latest` / `pending` all resolve — so
+      loosening `rpc.adapter.call` does not oblige this one to change, and
+      the two must not be given the same window. Do not let a shared
+      `BlockRef` type grow a window field to serve the call case; the window
+      belongs to `rpc.adapter.capability_probe`.
   - id: rpc.adapter.logs
     kind: operation
     signature: "rpc.adapter.logs(chain_id: ChainId, from_block: int, to_block: int, topic_filter: TopicFilter) -> list[LogRecord]"
-    description: >
+    description: |
       Bounded eth_getLogs with adaptive range splitting. One
       pool-filtered topic0 OR query per stream, never one per event
       type.
 
-      The topic set is CLOSED and is exactly these five, emitted by the
-      PoolManager at `architecture/project.yaml` -> contracts.pool_manager:
+      ## The topic0 set is these five constants and nothing else
 
-        Initialize         (PoolId indexed, currency0, currency1, fee, tickSpacing, hooks, sqrtPriceX96, tick)
-        ModifyLiquidity    (PoolId indexed, sender, tickLower, tickUpper, liquidityDelta, salt)
-        Swap               (PoolId indexed, sender, amount0, amount1, sqrtPriceX96, liquidity, tick, fee)
-        Donate             (PoolId indexed, sender, amount0, amount1)
-        ProtocolFeeUpdated (PoolId indexed, protocolFee)
+      | event | signature (PoolId is `bytes32` here) | topic0 |
+      |---|---|---|
+      | Initialize | `Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)` | `0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438` |
+      | ModifyLiquidity | `ModifyLiquidity(bytes32,address,int24,int24,int256,bytes32)` | `0xf208f4912782fd25c7f114ca3723a2d5dd6f3bcc3ac8db5af63baa85f711d5ec` |
+      | Swap | `Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)` | `0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f` |
+      | Donate | `Donate(bytes32,address,uint256,uint256)` | `0x29ef05caaff9404b7cb6d1c0e9bbae9eaa7ab2541feba1a9c4248594c08156cb` |
+      | ProtocolFeeUpdated | `ProtocolFeeUpdated(bytes32,uint24)` | `0xe9c42593e71f84403b84352cd168d693e2c9fcd1fdbcc3feb21d92b43e6696f9` |
 
-      A caller MAY narrow this with a subset; it may not widen it. There
-      is no sixth event and no "any other PoolManager log" mode.
+      **`PoolId` is ABI-typed `bytes32` in all five, and that is not a
+      typo to be corrected against upstream.** The Uniswap v4-core `main`
+      branch declares `PoolId` as `address`, and the signatures that
+      produce are five different topic0 values, and those match nothing here:
+      0 logs in each of five 50000-block windows, in four of which the
+      bytes32 values below returned logs from the same window, and all five
+      are absent from the deployed bytecode. A filter built from the upstream
+      signatures returns an empty stream forever, with no error, which is the
+      worst shape a wrong constant can take.
+
+      The set is closed as a **filter contract**, and the closure is about
+      this adapter, not about the deployment. `architecture/project.yaml` ->
+      contracts.pool_manager pins the code hash
+      `0xbd3881180b547f5fe817545743cfb4343e96b1bc6640dcd70c106b0066e95626`
+      that these five were read from; a different code hash means these
+      five are no longer established and this capability's Card must be
+      rewritten before anything is built on it.
+
+      **This address does emit other logs, and this set does not name
+      them.** `Transfer(address,address,address,uint256,uint256)` =
+      `0x1b3d7edb2e9c0b0e7c525b20aaaef0f5940d2ed71663c7d39266ecafac728859`
+      (4 topics, two-word data payload) appeared in every sampled window, and
+      an unidentified
+      `0xceb576d9f15e4e200fdb5096d64d5dfd667e16def20c1eefd14256d8e3faa267`
+      (3 topics) appeared twice in 480000 sampled blocks. Neither carries a
+      pool id. UNKNOWN what the second one is — none of 33 candidate
+      signatures hashes to it — and UNKNOWN whether a third unobserved topic0
+      exists, since a bytecode PUSH32 scan can only rule a value out, never in.
+      So: a caller MAY narrow this set with a subset, and may not widen it;
+      there is no "any other PoolManager log" mode. What this section does
+      not claim is that the five are every log the address can produce.
+
+      All five take `PoolId` as the first indexed parameter, so one query
+      per pool covers all of them: `topic0 IN (<the five above>) AND topic1 =
+      <poolId>`. `topic1` is a full 32-byte hash on every one of the five, and
+      recomputing keccak256(abi.encode(PoolKey)) from an `Initialize` log
+      reproduces it exactly.
 
       **`ProtocolFeeUpdated` is not optional and is the one that gets
       forgotten.** The four pool events are the ones that look like pool
@@ -46,16 +91,75 @@ provides:
       an event from this list is therefore a correctness bug, not a
       performance choice.
 
-      All five take `PoolId` as the first indexed parameter, so one query
-      per pool covers all of them: `topic0 IN (<the five>) AND topic1 =
-      <poolId>`.
+      It fires on this chain, and often: at least 41372 occurrences across
+      1220 distinct blocks, between block 0x402776e and 0x48b87cc. Two
+      further chunks of that sweep were rejected by the endpoint's
+      10000-result cap and are not counted, so the figure is a floor. A
+      Design Blocker recorded this event as UNKNOWN from ten 40-block windows
+      at stride 0x4000 that returned zero — a sampling shape covering 0.24%
+      of the span it was taken over, and re-running those same ten windows
+      reproduced the zero. The Card may state that the event is common. It
+      may NOT state a firing rate: nothing was measured per unit time, and a
+      count is a property of the sample rather than of the chain.
   - id: rpc.adapter.call
     kind: operation
     signature: "rpc.adapter.call(chain_id: ChainId, block_ref: BlockRef, to: Address, data: bytes) -> bytes"
-    description: >
-      Block-pinned eth_call. Non-retryable (a malformed call returns
-      the same error on retry; classify as non-retryable so the caller
-      sees the real failure immediately).
+    errors:
+      - { code: RPC_BLOCK_STATE_UNAVAILABLE, recoverable: permanent }
+      - { code: RPC_CALL_REVERTED,             recoverable: user_input }
+    description: |
+      eth_call against one block_ref. Non-retryable (a malformed call
+      returns the same error on retry; classify as non-retryable so the
+      caller sees the real failure immediately).
+
+      ## The pin is honoured where state exists, and fails loudly where it does not
+
+      This capability does NOT promise that any block_ref can be read. The
+      endpoint serves historical state from a rolling window, and outside
+      that window a pinned call fails. What it promises instead is the
+      failure's *shape*, which is the part a caller can act on:
+
+      - A block_ref the serving node cannot serve raises
+        `RPC_BLOCK_STATE_UNAVAILABLE`. This is NOT a revert, NOT a transport
+        failure, and NOT an empty return. A caller MUST distinguish it from
+        `RPC_CALL_REVERTED`, and MUST NOT retry it: the same node will answer
+        the same way, and a retry loop over an unservable block is how a
+        replay silently stops making progress.
+      - A block_ref naming a block that exists and whose state IS served
+        returns the call's bytes, or raises `RPC_CALL_REVERTED`.
+
+      The contract deliberately does not state how wide the window is.
+      Measured on the one known endpoint on 2026-09-30, reads succeeded to
+      roughly head-6000 and failed by head-6500; head-5000 failed in one
+      sweep and succeeded in a later one at a later head; and one fixed block
+      probed ten times returned OK seven times and then
+      `RPC_BLOCK_STATE_UNAVAILABLE` twice. The edge is not a constant offset
+      from head and not a function of the block number — it is a property of
+      the serving node at request time. A number written here would be wrong
+      within the hour, which is a worse defect than the one being fixed.
+
+      Consequently the window is measured, not declared:
+      `rpc.adapter.capability_probe` is how a caller learns it, and a caller
+      that needs a pinned call to succeed is responsible for having probed.
+
+      Two further measured facts a caller needs, neither of which this
+      contract will freeze into a number:
+
+      - `finalized` is not a usable block_ref for this capability on the
+        measured endpoint: `eth_call` at that tag fails with
+        "historical state ... is not available", while `safe`, `latest` and
+        `pending` answer. `eth_getBlockByNumber("finalized")` resolves that
+        block fine, so the block is known and its state is simply not served.
+        Resolving a `BlockRef` to a number is therefore not the same
+        operation as being able to call against it.
+      - `eth_getLogs` and `eth_call` do not share a horizon. Logs were served
+        from head-1000000 and state was not. A caller that fetches a wide log
+        range and then reads state across it will reach the edge partway
+        through, and must expect `RPC_BLOCK_STATE_UNAVAILABLE` there rather
+        than treating it as an adapter fault.
+
+      Coordinates for all of the above are in `architecture/project.yaml` ->
+      endpoint_facts.
   - id: rpc.adapter.chain_id
     kind: operation
     signature: "rpc.adapter.chain_id(url: str) -> ChainId"
@@ -65,7 +169,29 @@ provides:
   - id: rpc.adapter.capability_probe
     kind: operation
     signature: "rpc.adapter.capability_probe(urls: list[str]) -> CapabilityReport"
-    description: >
+    description: |
       Per-endpoint capability probe (T024). Reports measured block
       range cap, log interval cap, archive support, and finality. The
       ingestion router uses this to choose endpoints and ranges.
+
+      **This capability became load-bearing for `rpc.adapter.call` and did
+      not used to be.** `call` no longer states a state-retention window,
+      because the measured edge moved between two sweeps on the afternoon it
+      was measured, and one fixed block flipped from serving to not-serving
+      inside a single run of ten probes. The window is therefore something a
+      caller has to measure rather than read off a contract, and this is the
+      capability that measures it.
+
+      Two consequences for its Card, recorded here because they are
+      contract-level and a Card is not the place to settle them:
+
+      - It must report the *state* window and the *log* window as separate
+        numbers. They are not one horizon — logs were served from
+        head-1000000 on the measured endpoint while state was not — and
+        collapsing them into a single "block range cap" yields a number that
+        is wrong for one of the two consumers.
+      - It must report the window against the block it was measured at. A
+        bare count is the defect this contract just removed, one layer down.
+
+      The Card is module-designer's to write or revise. The dispatcher should
+      be told this capability's meaning changed; that is not decided here.

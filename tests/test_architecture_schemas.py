@@ -235,6 +235,22 @@ class SchemaBehaviourTests(unittest.TestCase):
         self.assertVerdict("PublicAddressRequest", {"key_id": ""}, False)
         self.assertVerdict("PublicAddressRequest", {}, False)
 
+    def test_lock_state_request_takes_no_argument_at_all(self) -> None:
+        """The refusal is the content of this schema, so it is what gets pinned.
+
+        `signer.lock_state` reads the state of the signer process, not of a
+        named key — its sibling `signer.public_address` is the one that takes a
+        `key_id`. `additionalProperties: false` with `maxProperties: 0` says a
+        caller passing a key is turned away rather than quietly ignored, which
+        is what makes "lock_state takes no argument" something a test can state
+        instead of something it has to infer. An empty object is the whole of
+        the accepted set; a `key_id` here would be the per-key reading this
+        schema exists to rule out.
+        """
+        self.assertVerdict("LockStateRequest", {}, True)
+        self.assertVerdict("LockStateRequest", {"key_id": "lp-1"}, False)
+        self.assertVerdict("LockStateRequest", {"any": 1}, False)
+
 
 @unittest.skipIf(_Validator is None, "jsonschema is not installed")
 class SchemaDocumentTests(unittest.TestCase):
