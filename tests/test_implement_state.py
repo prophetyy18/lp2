@@ -1714,14 +1714,164 @@ def _capability_from_yaml(arch, capability: str):
 
 
 class CrossModuleGateTests(unittest.TestCase):
-    """`upstream` and `dependers-of` read the real architecture, not STATE guesses."""
+    """The upstream gate and `dependers-of`, against a fixture architecture.
+
+    `upstream` and `dependers-of` answer out of the ARCHITECTURE and layer
+    STATE on top, so this class used to read the real `architecture/` tree
+    directly. That made every assertion in it a claim about this repository's
+    current declarations as well as about the state machine: dropping one
+    `uses:` entry from `robinhood-rpc` broke a test whose subject is "green
+    only when every declared upstream is fully_approved", and the edit that
+    read best — `3/3` becoming `2/2`, with the capability id swapped to
+    whatever remained — would have kept the coupling and broken again on the
+    next architecture edit.
+
+    So the architecture is a fixture, written below and reached through a
+    patched `st.REPO_ROOT`, for the reason `StateCLITests` gives at the top of
+    its own `setUp`: a test whose expected value moves when an unrelated
+    declaration moves is not testing the thing it names.
+
+    What is lost is the accidental check that the real declarations are
+    self-consistent. That question is real and it is asked on purpose, of the
+    real tree, by `RealArchitectureEdgeTests` at the foot of this file.
+    """
+
+    # A provider whose capability ids do NOT begin with the module name, which
+    # is the shape `dependers-of` has to survive: splitting `alpha.sizing.compute`
+    # on the first dot invents a module called `alpha`, and no such module is
+    # declared. A fixture named `alpha` publishing `alpha.one` would pass that
+    # test for the wrong reason.
+    PROVIDER = "robinhood-alpha"
+    CONSUMER = "robinhood-beta"
+    SIBLING_CONSUMERS = ("robinhood-gamma", "robinhood-delta")
+
+    # Three, so the gate's fraction is a real one. With a single `uses:` entry
+    # every count below reads 1/1 or 0/1, and a numerator that is always the
+    # denominator cannot tell "all approved" from "one of one approved".
+    DECLARED_USES = (
+        "alpha.pool_key.parse",
+        "alpha.identity.chain_id.parse",
+        "alpha.identity.address.parse",
+    )
+    # A fourth use, held back from DECLARED_USES on purpose: `dependers-of`
+    # has to narrow BY CAPABILITY, so at least one capability the consumer
+    # declares must be absent from the dependers of the shared one.
+    SHARED_USE = "alpha.sizing.compute"
+    # Four, so `show` has a declared set with rows missing from STATE — the
+    # case that made `complete` reachable for a partly-built module.
+    CONSUMER_CAPS = (
+        "beta.logs.read",
+        "beta.header.read",
+        "beta.call.read",
+        "beta.capability.probe",
+    )
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
+        self._old_state_root = STATE_ROOT
+        import tools.implement.state as st
+
+        st.STATE_ROOT = self.root
+        self.repo = self.root / "repo"
+        self._write_architecture(self.repo)
+        self._old_repo_root = st.REPO_ROOT
+        st.REPO_ROOT = self.repo
 
     def tearDown(self) -> None:
+        import tools.implement.state as st
+
+        st.STATE_ROOT = self._old_state_root
+        st.REPO_ROOT = self._old_repo_root
         self._tmp.cleanup()
+
+    def _write_architecture(self, repo: Path) -> None:
+        """A throwaway architecture shaped like the real consumer/provider pair.
+
+        Hyphenated module names and dotted capability ids, because both are
+        load-bearing above: a name that splits cleanly on its first dot cannot
+        reproduce the provider-resolution bug, and a name without one cannot
+        reproduce the import shape the grants are written for.
+        """
+        import yaml
+
+        def contract(name: str, provides: tuple[str, ...], requires: list[str]) -> dict:
+            return {
+                "name": name,
+                "version": 1,
+                "requires": requires,
+                "provides": [{"id": cap} for cap in provides],
+            }
+
+        def module(name: str, owns: list[str], deps: list[dict]) -> dict:
+            data = {
+                "name": name,
+                "source": f"modules/{name}",
+                "provides_contracts": owns,
+                "depends_on": deps,
+            }
+            if deps:
+                # AGENTS.md §3: a cross-module dependency needs BOTH halves —
+                # the `depends_on` entry and the grant that makes the import
+                # legal. The fixture carries both so it is a shape a real
+                # module is allowed to have.
+                data["readable_extra"] = [
+                    f"modules/{d['contract'][: -len('-api')]}/api/**" for d in deps
+                ]
+            return data
+
+        provider_caps = (*self.DECLARED_USES, self.SHARED_USE)
+        contracts = {
+            f"{self.PROVIDER}-api": contract(
+                f"{self.PROVIDER}-api", provider_caps, []
+            ),
+            f"{self.CONSUMER}-api": contract(
+                f"{self.CONSUMER}-api", self.CONSUMER_CAPS, [f"{self.PROVIDER}-api"]
+            ),
+        }
+        modules = {
+            self.PROVIDER: module(self.PROVIDER, [f"{self.PROVIDER}-api"], []),
+            self.CONSUMER: module(
+                self.CONSUMER,
+                [f"{self.CONSUMER}-api"],
+                [{"contract": f"{self.PROVIDER}-api", "uses": list(self.DECLARED_USES)}],
+            ),
+        }
+        for name in self.SIBLING_CONSUMERS:
+            contracts[f"{name}-api"] = contract(f"{name}-api", (f"{name}.plan",), [])
+            modules[name] = module(
+                name,
+                [f"{name}-api"],
+                [{"contract": f"{self.PROVIDER}-api", "uses": [self.SHARED_USE]}],
+            )
+
+        (repo / "architecture/contracts").mkdir(parents=True)
+        for name, body in contracts.items():
+            (repo / "architecture/contracts" / f"{name}.yaml").write_text(
+                yaml.safe_dump(body, sort_keys=False), encoding="utf-8"
+            )
+        for name, body in modules.items():
+            target = repo / "architecture/modules" / name
+            target.mkdir(parents=True)
+            (target / "module.yaml").write_text(
+                yaml.safe_dump(body, sort_keys=False), encoding="utf-8"
+            )
+
+    def _declared_uses(self, module: str) -> list[str]:
+        """The `uses:` this fixture declares, read back off disk.
+
+        The count assertions quote this rather than a literal, so the number in
+        the expectation and the number the gate prints come from one place and
+        cannot drift apart when the fixture grows a use.
+        """
+        import yaml
+
+        path = self.repo / "architecture/modules" / module / "module.yaml"
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return [cap for dep in data["depends_on"] for cap in dep["uses"]]
+
+    def _green_count(self, approved: int, total: int) -> str:
+        return f"{approved}/{total} consumable"
 
     def _run(self, *argv: str) -> tuple[int, str]:
         from tools.implement import state
@@ -1744,6 +1894,15 @@ class CrossModuleGateTests(unittest.TestCase):
         rec.capabilities[cap] = CapabilityRecord(state=st, mode="full")
         save_state(rec, self.root)
 
+    def _approve_every_upstream(self) -> None:
+        for cap in self.DECLARED_USES:
+            self._set_upstream(self.PROVIDER, cap, "fully_approved")
+
+    def _approve_all_but(self, cap: str) -> None:
+        for other in self.DECLARED_USES:
+            if other != cap:
+                self._set_upstream(self.PROVIDER, other, "fully_approved")
+
     def test_module_state_counts_capabilities_nobody_registered(self) -> None:
         """The summary must not report `complete` for a partly-built module.
 
@@ -1754,28 +1913,29 @@ class CrossModuleGateTests(unittest.TestCase):
         it. The architecture is the only thing that knows all three exist.
 
         (That module was `market-data`, since retired — see
-        `docs/implement/market-data/series.calendar.card.md`. The fixture is
-        `robinhood-features` now, which is the layer that module's bars
-        capability was folded into.)
+        `docs/implement/market-data/series.calendar.card.md`. The layer that
+        module's bars capability was folded into is the one this now runs on,
+        by fixture name rather than by the live module.)
         """
-        self._set_upstream("robinhood-features", "features.position.value", "fully_approved")
-        rc, out = self._run("--root", str(self.root), "show", "robinhood-features")
+        approved, rest = self.CONSUMER_CAPS[0], self.CONSUMER_CAPS[1:]
+        self._set_upstream(self.CONSUMER, approved, "fully_approved")
+        rc, out = self._run("--root", str(self.root), "show", self.CONSUMER)
         self.assertEqual(rc, 0)
         self.assertIn("module_state: in_progress", out)
         self.assertNotIn("module_state: complete", out)
-        self.assertIn("features.quote.usdg", out)
-        self.assertIn("features.attribution.attribute", out)
+        # named individually, and counted against what the contract declares
+        for cap in rest:
+            self.assertIn(cap, out)
+        self.assertIn(
+            f"not registered ({len(rest)} of {len(self.CONSUMER_CAPS)} declared",
+            out,
+        )
 
     def test_a_fully_registered_and_approved_module_is_complete(self) -> None:
         """The correction must not make `complete` unreachable."""
-        for cap in (
-            "features.position.value",
-            "features.position.principal_delta",
-            "features.attribution.attribute",
-            "features.quote.usdg",
-        ):
-            self._set_upstream("robinhood-features", cap, "fully_approved")
-        rc, out = self._run("--root", str(self.root), "show", "robinhood-features")
+        for cap in self.CONSUMER_CAPS:
+            self._set_upstream(self.CONSUMER, cap, "fully_approved")
+        rc, out = self._run("--root", str(self.root), "show", self.CONSUMER)
         self.assertEqual(rc, 0)
         self.assertIn("module_state: complete", out)
         self.assertNotIn("not registered", out)
@@ -1788,64 +1948,86 @@ class CrossModuleGateTests(unittest.TestCase):
         `fully_approved` — i.e. consumable — capability was actually standing
         on, which is the question that had no answer at all before.
         """
-        rec = load_state("robinhood-rpc", self.root)
-        rec.capabilities["rpc.adapter.logs"] = CapabilityRecord(
-            state="fully_approved", mode="full", consumes=["protocol.pool_key.parse"]
+        consumer_cap, retracted = self.CONSUMER_CAPS[0], self.DECLARED_USES[0]
+        self._approve_all_but(retracted)  # so the retracted row is the only red
+        rec = load_state(self.CONSUMER, self.root)
+        rec.capabilities[consumer_cap] = CapabilityRecord(
+            state="fully_approved", mode="full", consumes=[retracted]
         )
         save_state(rec, self.root)
-        # protocol.pool_key.parse is unregistered, so the capability is
-        # consumable on a guarantee nothing provides.
-        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-rpc", "rpc.adapter.logs")
+        # the retracted capability is unregistered, so this one is consumable
+        # on a guarantee nothing provides
+        rc, out = self._run(
+            "--root", str(self.root), "upstream", self.CONSUMER, consumer_cap
+        )
         self.assertIn("retracted", out)
-        self.assertIn("protocol.pool_key.parse", out)
+        self.assertIn(retracted, out)
         # reported, not enforced: not re-opened behind Owner's back
         self.assertEqual(
-            load_state("robinhood-rpc", self.root).capabilities["rpc.adapter.logs"].state,
+            load_state(self.CONSUMER, self.root).capabilities[consumer_cap].state,
             "fully_approved",
         )
 
     def test_a_sound_guarantee_is_not_reported(self) -> None:
-        self._set_upstream("robinhood-protocol", "protocol.pool_key.parse", "fully_approved")
-        rec = load_state("robinhood-rpc", self.root)
-        rec.capabilities["rpc.adapter.logs"] = CapabilityRecord(
-            state="fully_approved", mode="full", consumes=["protocol.pool_key.parse"]
+        """The negative needs a positive beside it or it asserts nothing.
+
+        Two approved capabilities in the same module, one resting on a live
+        guarantee and one on a capability no contract provides, and the gate
+        is asked about the module rather than about either of them — so both
+        rows are examined in one report. If the check were not running at all,
+        this would still pass, which is the whole reason the broken row is
+        here.
+        """
+        sound, broken = self.CONSUMER_CAPS[0], self.CONSUMER_CAPS[1]
+        self._approve_every_upstream()
+        rec = load_state(self.CONSUMER, self.root)
+        rec.capabilities[sound] = CapabilityRecord(
+            state="fully_approved", mode="full", consumes=[self.DECLARED_USES[0]]
+        )
+        rec.capabilities[broken] = CapabilityRecord(
+            state="fully_approved", mode="full", consumes=["alpha.retired.parse"]
         )
         save_state(rec, self.root)
-        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-rpc", "rpc.adapter.logs")
-        self.assertNotIn("retracted", out)
+        rc, out = self._run("--root", str(self.root), "upstream", self.CONSUMER)
+        self.assertEqual(rc, 0)
+        # exactly one of the two is reported, and the other is not
+        self.assertIn(f"{self.CONSUMER}/{broken} is fully_approved", out)
+        self.assertIn("alpha.retired.parse", out)
+        self.assertNotIn(f"{self.CONSUMER}/{sound} is fully_approved", out)
 
     # --- dependers-of ------------------------------------------------------
 
     def test_dependers_of_resolves_the_provider_from_the_architecture(self) -> None:
         """The old version split on the first dot and invented a module.
 
-        `protocol.sizing.compute` -> a module called `protocol`, which does
-        not exist. The provider is `robinhood-protocol`, so dependers-of could
-        never list one.
+        `alpha.sizing.compute` -> a module called `alpha`, which does not
+        exist. The provider is `robinhood-alpha`, so dependers-of could never
+        list one.
         """
         import yaml
 
         rc, out = self._run(
-            "--root", str(self.root), "dependers-of", "protocol.sizing.compute"
+            "--root", str(self.root), "dependers-of", self.SHARED_USE
         )
         self.assertEqual(rc, 0)
         data = yaml.safe_load(out)
-        self.assertEqual(data["owning_module"], "robinhood-protocol")
-        self.assertEqual(data["contract"], "robinhood-protocol-api")
-        self.assertNotEqual(data["owning_module"], "protocol")
+        self.assertEqual(data["owning_module"], self.PROVIDER)
+        self.assertEqual(data["contract"], f"{self.PROVIDER}-api")
+        self.assertNotEqual(data["owning_module"], "alpha")
 
     def test_dependers_of_lists_the_modules_that_use_it(self) -> None:
         import yaml
 
         _, out = self._run(
-            "--root", str(self.root), "dependers-of", "protocol.sizing.compute"
+            "--root", str(self.root), "dependers-of", self.SHARED_USE
         )
         data = yaml.safe_load(out)
         names = {d["module"] for d in data["declared_dependers"]}
-        self.assertIn("robinhood-strategy", names)
-        self.assertIn("robinhood-features", names)
-        self.assertIn("robinhood-execution", names)
-        self.assertNotIn("robinhood-protocol", names)  # never its own depender
+        self.assertEqual(names, set(self.SIBLING_CONSUMERS))
+        self.assertNotIn(self.PROVIDER, names)  # never its own depender
+        # narrowed BY CAPABILITY, not by contract: the consumer declares the
+        # same contract and does not appear, because it never names this use
+        self.assertNotIn(self.CONSUMER, names)
 
     def test_dependers_of_rejects_a_capability_nobody_provides(self) -> None:
         rc, out = self._run("--root", str(self.root), "dependers-of", "not.a.cap")
@@ -1854,57 +2036,121 @@ class CrossModuleGateTests(unittest.TestCase):
 
     # --- the upstream gate -------------------------------------------------
 
+    def test_the_fixture_declares_a_fraction_and_not_a_single_use(self) -> None:
+        """The premise of the count assertions below, stated as a test.
+
+        With one declared use every count is 1/1 or 0/1 and a gate that
+        dropped a row would still agree with the expectation.
+        """
+        declared = self._declared_uses(self.CONSUMER)
+        self.assertEqual(sorted(declared), sorted(self.DECLARED_USES))
+        self.assertGreater(len(declared), 1)
+
     def test_upstream_is_green_for_a_module_with_no_dependencies(self) -> None:
-        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-protocol")
+        rc, out = self._run("--root", str(self.root), "upstream", self.PROVIDER)
         self.assertEqual(rc, 0)
         self.assertIn("green", out)
 
     def test_upstream_is_red_when_the_upstream_is_unregistered(self) -> None:
-        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-rpc")
+        total = len(self.DECLARED_USES)
+        rc, out = self._run("--root", str(self.root), "upstream", self.CONSUMER)
         self.assertEqual(rc, 1)
-        self.assertIn("protocol.pool_key.parse", out)
         self.assertIn("unregistered", out)
+        self.assertIn(self._green_count(0, total), out)
+        for cap in self.DECLARED_USES:
+            self.assertIn(cap, out)
+
+    def test_upstream_is_red_while_one_upstream_is_still_open(self) -> None:
+        """Green is a property of EVERY row, not of most of them."""
+        total = len(self.DECLARED_USES)
+        self._approve_all_but(self.DECLARED_USES[0])
+        rc, out = self._run("--root", str(self.root), "upstream", self.CONSUMER)
+        self.assertEqual(rc, 1)
+        self.assertIn(self._green_count(total - 1, total), out)
+        self.assertNotIn("green: every declared upstream", out)
 
     def test_upstream_is_green_only_when_every_upstream_is_fully_approved(self) -> None:
-        self._set_upstream("robinhood-protocol", "protocol.pool_key.parse", "fully_approved")
-        for cap in ("protocol.identity.chain_id.parse", "protocol.identity.address.parse"):
-            self._set_upstream("robinhood-protocol", cap, "fully_approved")
-        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-rpc")
+        total = len(self.DECLARED_USES)
+        self._approve_every_upstream()
+        rc, out = self._run("--root", str(self.root), "upstream", self.CONSUMER)
         self.assertEqual(rc, 0)
-        self.assertIn("3/3 consumable", out)
+        self.assertIn(self._green_count(total, total), out)
+        self.assertIn("green: every declared upstream", out)
+
+    def test_every_state_other_than_fully_approved_is_red(self) -> None:
+        """The rule the whole gate exists to enforce, over the whole state set.
+
+        One row is held short in each state and the other two are approved, so
+        a gate that only checked the first row, or that treated an MVP as a
+        pass-through, fails here rather than in whichever test happened to
+        name that state. Re-setting the same row to each state in turn is the
+        whole setup: nothing else in STATE changes between iterations, and the
+        gate reads STATE on every call.
+        """
+        total = len(self.DECLARED_USES)
+        self._approve_all_but(self.DECLARED_USES[0])
+        for state in ("pending", "mvp_developed", "changes_requested", "abandoned"):
+            with self.subTest(state=state):
+                self._set_upstream(self.PROVIDER, self.DECLARED_USES[0], state)
+                rc, out = self._run(
+                    "--root", str(self.root), "upstream", self.CONSUMER
+                )
+                self.assertEqual(rc, 1)
+                self.assertIn(state, out)
+                self.assertIn(self._green_count(total - 1, total), out)
 
     def test_upstream_is_red_with_an_mvp_upstream(self) -> None:
         """An MVP is not consumable, so it is red -- never a pass-through."""
-        for cap in ("protocol.identity.chain_id.parse", "protocol.identity.address.parse"):
-            self._set_upstream("robinhood-protocol", cap, "fully_approved")
         self._set_upstream(
-            "robinhood-protocol", "protocol.pool_key.parse", "mvp_developed"
+            self.PROVIDER, self.DECLARED_USES[0], "mvp_developed"
         )
-        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-rpc")
+        rc, out = self._run("--root", str(self.root), "upstream", self.CONSUMER)
         self.assertEqual(rc, 1)
         self.assertIn("mvp_developed", out)
         self.assertIn("retry <module> <cap> --mode full", out)
 
     def test_upstream_is_red_with_a_changes_requested_upstream(self) -> None:
         self._set_upstream(
-            "robinhood-protocol", "protocol.pool_key.parse", "changes_requested"
+            self.PROVIDER, self.DECLARED_USES[0], "changes_requested"
         )
-        rc, out = self._run("--root", str(self.root), "upstream", "robinhood-rpc")
+        rc, out = self._run("--root", str(self.root), "upstream", self.CONSUMER)
         self.assertEqual(rc, 1)
         self.assertIn("changes_requested", out)
 
-    def test_upstream_flag_narrows_the_declared_set(self) -> None:
-        """Module-level is the safe default; a Card knows better."""
-        self._set_upstream(
-            "robinhood-protocol", "protocol.pool_key.parse", "fully_approved"
-        )
+    def test_upstream_flag_narrows_to_exactly_the_named_set(self) -> None:
+        """Module-level is the safe default; a Card knows better.
+
+        Two of the three, not one: the point is that the set is replaced
+        rather than intersected, which a 1/1 expectation cannot show.
+        """
+        named = self.DECLARED_USES[:2]
+        for cap in named:
+            self._set_upstream(self.PROVIDER, cap, "fully_approved")
         rc, out = self._run(
-            "--root", str(self.root), "upstream", "robinhood-rpc", "rpc.adapter.logs",
-            "--upstream", "protocol.pool_key.parse",
+            "--root", str(self.root), "upstream", self.CONSUMER,
+            self.CONSUMER_CAPS[0],
+            *[arg for cap in named for arg in ("--upstream", cap)],
         )
         self.assertEqual(rc, 0)
-        self.assertIn("1/1 consumable", out)
-        self.assertNotIn("protocol.identity.address.parse", out)
+        self.assertIn(self._green_count(len(named), len(named)), out)
+        for cap in named:
+            self.assertIn(cap, out)
+        self.assertNotIn(self.DECLARED_USES[2], out)
+
+    def test_upstream_reports_a_capability_no_contract_provides(self) -> None:
+        """A Card naming a use that was retracted gets a red row, not a crash.
+
+        `depends_on[].uses` is itemised, so removing an entry and a Card that
+        still names it is the ordinary way this happens -- and the removed
+        `protocol.pool_key.parse` is the case that has already occurred here.
+        """
+        rc, out = self._run(
+            "--root", str(self.root), "upstream", self.CONSUMER,
+            self.CONSUMER_CAPS[0], "--upstream", "alpha.retired.parse",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("alpha.retired.parse", out)
+        self.assertIn("undeclared", out)
 
     def test_upstream_rejects_an_unknown_module(self) -> None:
         rc, out = self._run("--root", str(self.root), "upstream", "ghost")

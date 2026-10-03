@@ -16,6 +16,22 @@ requires:
   - robinhood-risk-api
   - robinhood-execution-api
   - robinhood-signer-api
+  - robinhood-rpc-api   # nothing validates this field against module.yaml; kept
+                       # in step by hand. See the note below.
+
+# WHY robinhood-rpc-api is in `requires:` even though no capability in this
+# contract names one of its types. `application.ingest.run` is the consumer:
+# "plan ranges, route by capability, write to storage" reads through
+# rpc.adapter.logs, rpc.adapter.block_header and rpc.adapter.capability_probe,
+# and with no edge here the composition root was declared against nine modules
+# while wiring eight — the read path had no plug at the source. The capability
+# signatures here say `IngestRequest -> IngestResult` and name neither the
+# adapter nor the endpoint, so the evidence for this edge is in the description
+# above and in architecture/modules/robinhood-application/module.yaml, not in a
+# type reference. Framework note, because it is the kind of gap no tool
+# reports: NOTHING cross-checks this list against the module's `depends_on`.
+# `archctl validate` passing says nothing about the two agreeing, which is why
+# the count is stated in both places.
 
 provides:
   - id: application.backtest.start

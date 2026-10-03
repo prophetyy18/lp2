@@ -1,0 +1,960 @@
+# Declared shapes owned by robinhood-rpc-api.
+#
+# Five types. Each is here because something outside this file decided it: the
+# contract's own prose, or a chain read on the deployment this adapter talks
+# to. Nothing below is a design preference dressed as a shape.
+#
+# TWO RULES RUN THROUGH ALL FIVE.
+#
+# 1. A type here is the PARSED, PROJECTED value the adapter returns, not the
+#    JSON-RPC response object. A decoder selects the fields declared here and
+#    drops the rest; every dropped field is named, per type, in
+#    `x-wire-ignored`. Validating a raw response against one of these types
+#    fails by design, and that is stated rather than left to be discovered.
+#    The alternative — leaving `additionalProperties` open so the raw object
+#    validates — is rejected in each type's own note: it makes the declared
+#    fields unconstrained against typos, and a typo'd field name is a
+#    constraint nobody is enforcing.
+#
+# 2. A field is published only when a clause of this contract or a declared
+#    consumer needs it. "The endpoint returns it" is not a justification, and
+#    neither is "its meaning is unknown" — a field with no consumer is a
+#    promise nobody can test (docs/design/DECLARATION-PROVENANCE.md, steps 2
+#    and 3). Fields the endpoint returns that fail this test are named in
+#    `x-wire-ignored` so the decoder still knows to tolerate them, and are not
+#    demanded by the type.
+#
+# What is deliberately absent from all five: every measured NUMBER. The
+# 10000-result log cap, the 30000-block range cap, the ~6000-block state window
+# and the 24009 bytes of PoolManager bytecode are facts about one host at one
+# moment. They live in `architecture/project.yaml` with chain id, block and
+# retrieval time, and a schema that defaulted to one of them would be a claim
+# that rots inside the hour.
+#
+# OWNER DECISION 2026-10-02, applied to `LogRecord`: the log object's
+# `blockTimestamp` reads 0x0 on every log read, so it is not data and is not
+# in the type. 「如果获取的信息都是 0 就说明不支持这个数据,那就不要放进去,或者换一种方法」
+# — the second half of that ruling is already decided by the rest of the
+# architecture: time comes from `BlockHeader.timestamp`, addressed by a log's
+# block number. See `LogRecord`.
+#
+# One gap this file does not close, and it is a gap about consumers, not about
+# availability.
+#
+#   Three members of the contract's closed method set have no capability
+#   anywhere in this architecture: eth_blockNumber, eth_getBlockByHash and
+#   eth_getTransactionReceipt. All three are VERIFIED AVAILABLE on this chain
+#   — eth_getBlockByHash and eth_getTransactionReceipt were each read at a
+#   pinned block on 2026-10-02, coordinates in architecture/project.yaml ->
+#   endpoint_facts — so this is not a question of whether the chain speaks
+#   them. `CapabilityReport.measured_at_block` is a block, and reading one fresh
+#   is the operation that would fill it; it is written as "the block this
+#   measurement was taken at" without assuming a capability to read the head
+#   exists, because none does.
+#
+#   The second and third of those are worth separating. `eth_getBlockByHash`
+#   needs no new capability to be useful: `LogRecord.block_hash` and
+#   `BlockHeader.hash` are both required fields, so the value is already in the
+#   data and the method answers for it (see the `BlockRef` hash branch).
+#   `eth_getTransactionReceipt` is the one with nothing behind it — no
+#   capability, no consumer, no type — and it is the item worth a decision.
+#
+# A retracted claim, kept because the mistake is cheap to repeat: an earlier
+# version of this header held that the hash form was unservable, on the grounds
+# that `eth_getBlockByHash` appeared nowhere in this repository. A string
+# missing from a repository is evidence about the repository. The method
+# answers when called.
+#
+# Scope note, in the spirit of the other two schema files: the receipt object
+# has no capability to hang a type on, so it has no schema here. That is a
+# visible gap, not a settled shape. What is known about it, measured
+# 2026-10-02: sixteen fields, of which `l1BlockNumber` and `gasUsedForL1` are
+# not in the Ethereum JSON-RPC receipt object — the same shape of finding as
+# the block object's four extras, and the same reason a type for it would have
+# to be its own rather than a reuse. The method also takes ONE argument here,
+# and a second argument is refused whatever it is, so a receipt read carries
+# no block pin while every other read in this contract is addressed by one.
+# That is the fact worth putting to the Owner. It is worth being precise about
+# what it is NOT: receipts for transactions 50000 blocks back were served
+# without complaint, so the limitation is the missing pin and not an age
+# cutoff, and an earlier version of this header said "as of the current
+# canonical tip", which the 50000-block read refutes. Coordinates:
+# architecture/project.yaml -> endpoint_facts, chain 4663, blocks 0x4aac83b
+# and 0x4aa0564, retrieved 2026-10-02.
+
+# --- block reference --------------------------------------------------------
+
+BlockRef:
+  description: >
+    One block, addressed one of three ways: a height, a hash, or a named tag.
+    A nominal union rather than one constrained string, because the three forms
+    are three different requests and a string cannot say which one it is — the
+    three resolve through three different methods, and a consumer reading a
+    string would have to guess which one was meant before it could issue a
+    call.
+
+    WHY THREE AND NOT FOUR: `earliest` is a standard JSON-RPC tag and is
+    deliberately absent, because no capability in this contract names it and
+    this file does not get to add vocabulary. The other three are here because
+    each is either named by a capability signature or verified against this
+    chain — per-branch reasons below. Any fourth form would have to clear the
+    same bar, and "the chain has it" is not the bar.
+  oneOf:
+    - description: >
+        A block by height.
+      x-why: >
+        LOAD-BEARING. This is the branch the ingest path runs on:
+        `application.ingest.run` asks for a log range, `rpc.adapter.logs`
+        spells the bounds `from_block: int, to_block: int`, and a height is
+        what a `BlockHeader.number` or a `LogRecord.block_number` hands back.
+        The number flows forward into a range bound with no reformatting, which
+        is why this branch is an object holding an `integer` and not a
+        constrained string: nothing between the two has to parse anything.
+      x-constraint: >
+        `minimum: 0` and no maximum — see the note on the property. A maximum
+        would be a claim about this chain's head at the moment it was written.
+      type: object
+      additionalProperties: false
+      required: [number]
+      properties:
+        number:
+          type: integer
+          minimum: 0
+          x-note: >
+            No maximum. An upper bound would be a claim about this chain's head
+            at the moment it was written, and heads only grow; a header read
+            later is not a header this type could have accepted.
+          x-source: >
+            robinhood-rpc-api rpc.adapter.logs signature (`from_block: int,
+            to_block: int`)
+    - description: >
+        A block by hash, served by `eth_getBlockByHash`.
+      x-why: >
+        The consumer count is ZERO, and that is not the reason to drop it. The
+        value is already in the data: `LogRecord.block_hash` and
+        `BlockHeader.hash` are both REQUIRED fields, so "fetch the full header
+        for the block this log came from" is one field away, and a consumer for
+        it does not have to be invented from nothing the moment it is wanted.
+        The contract names it too — `rpc.adapter.block_header` promises a
+        header "by number or hash" — but that is where the branch comes from,
+        not why it stays. The load-bearing reason is that the data carries the
+        key and the chain was measured answering for it.
+
+        Verified, not assumed: `eth_getBlockByHash` answered on this chain and
+        returned an object with the same 23 fields, the same non-hydrated
+        transactions and the same absent `totalDifficulty` that
+        `eth_getBlockByNumber` returns, with a `number` and a `hash` that
+        agree with the by-number read of that height. The two methods were
+        checked against each other rather than assumed to agree. An earlier
+        version of this file held the branch unservable because the method name
+        appeared nowhere in this repository; that was a claim about the
+        repository mistaken for a claim about the chain, and it was wrong.
+      x-arg-shape: >
+        The method takes (hash, bool) and the second argument is a bool and only
+        a bool. Passing a block tag where a bool belongs is refused with -32602
+        ("cannot unmarshal string into Go value of type bool"), so there is no
+        EIP-1898 blockTag form to declare here: this branch returns the
+        canonical block for that hash and nothing finer. Coordinates:
+        architecture/project.yaml -> endpoint_facts, "eth_getBlockByHash is
+        available on this chain", chain 4663, block 0x48ad6c0, endpoint
+        https://rpc.mainnet.chain.robinhood.com, retrieved 2026-10-02.
+      type: object
+      additionalProperties: false
+      required: [hash]
+      properties:
+        hash:
+          description: >
+            Lowercase 32-byte hex, the parsed form. The wire spelling is a
+            JSON-RPC quantity-or-data string; parse at the edge and compare
+            lowercase, the same rule `robinhood-protocol-api.Address` follows.
+          type: string
+          pattern: "^0x[0-9a-f]{64}$"
+          x-source: >
+            eth_getBlockByHash, verified on this chain: chain 4663, endpoint
+            https://rpc.mainnet.chain.robinhood.com, retrieved 2026-10-02,
+            requested 0x4abf12ccb5508f3e3d862c420e4cfd9db7153ff8a7d724ee1203664861133b66
+            with false and answered with number 0x48ad6c0 and that same hash.
+            The pattern is also corroborated from the other side: an
+            eth_getBlockByNumber read at 0x48ad6c0 returned the same hash.
+    - description: >
+        A block by tag.
+      x-why: >
+        This is the branch that resolves a HEAD, and it exists because
+        `rpc.adapter.block_header` names all four tags by name in its own
+        description ("finalized / safe / latest / pending all resolve"), while
+        the by-height branch can only address a block someone already knows
+        the height of. The chain was measured answering for all four on the
+        header read; see `x-note-servability` for the one distinction that
+        matters, which is that resolving a tag and serving state at it are
+        different operations.
+
+        The tag set is exactly those four and no fifth. `earliest` is a
+        standard JSON-RPC tag this contract never mentions, and admitting it
+        would be vocabulary invented by this schema rather than carried by a
+        capability. An enum makes that structural: a fifth tag is not
+        expressible, so a later reader cannot widen the set by typing one.
+      type: object
+      additionalProperties: false
+      required: [tag]
+      properties:
+        tag:
+          type: string
+          enum: [latest, safe, pending, finalized]
+          x-source: >
+            robinhood-rpc-api rpc.adapter.block_header description ("finalized
+            / safe / latest / pending all resolve") and rpc.adapter.call
+            description (eth_call at `finalized` fails while `safe`, `latest`
+            and `pending` answer)
+  x-note: >
+    A union with no window field, and `additionalProperties: false` on each
+    branch is what keeps it that way: a `window`, `lookback` or `max_range`
+    key is refused by every branch, so the type cannot grow the field the
+    contract forbids it from growing. The window belongs to
+    `rpc.adapter.capability_probe`, which measures it, because the two
+    capabilities that share this type are served over different horizons.
+  x-note-servability: >
+    The three forms are not equally servable, and this type must not imply that
+    they are. On the measured endpoint `eth_getBlockByNumber("finalized")`
+    resolves while `eth_call` at `finalized` raises RPC_BLOCK_STATE_UNAVAILABLE
+    — so resolving a BlockRef to a number is not the same operation as being
+    able to call against it, and the tag list above is the list of tags that
+    RESOLVE, not a promise that all four serve a call. Coordinates:
+    architecture/project.yaml -> endpoint_facts, "eth_call cannot serve a
+    `finalized` block on this endpoint", chain 4663, block 0x48b76f1,
+    retrieved 2026-09-30.
+  x-source: >
+    robinhood-rpc-api rpc.adapter.block_header and rpc.adapter.call
+    signatures, and the explicit instruction in rpc.adapter.block_header's
+    description that BlockRef must not grow a window field
+
+# --- block header -----------------------------------------------------------
+
+BlockHeader:
+  description: >
+    One non-hydrated block header, as this adapter returns it: a PROJECTION of
+    what eth_getBlockByNumber answers. Numbers are integers and hashes are
+    lowercase hex, so no consumer re-parses a JSON-RPC quantity — the rule
+    `robinhood-protocol-api.Address` and `ChainId` already set for the rest of
+    this architecture. A decoder selects the five fields below and drops the
+    rest; the dropped ones are named in `x-wire-ignored`.
+  type: object
+  additionalProperties: false
+  required: [number, hash, parent_hash, timestamp, transactions]
+  properties:
+    number:
+      description: Block height. Parsed from the hex quantity on the wire.
+      type: integer
+      minimum: 0
+      x-wire-name: number
+      x-why: >
+        LOAD-BEARING, TWICE. It is the only way to name a block that every
+        other form can be converted to, and it is the value a header is FOR in
+        this architecture: `rpc.adapter.logs` takes `from_block: int,
+        to_block: int`, so a header's number is what a caller turns into a
+        range. It is also how a log gets its time — see `timestamp`.
+    hash:
+      description: This block's hash.
+      type: string
+      pattern: "^0x[0-9a-f]{64}$"
+      x-wire-name: hash
+      x-why: >
+        LOAD-BEARING, and it is what makes the `BlockRef` hash branch a real
+        path rather than a declared one: with this field required, a consumer
+        holding a `LogRecord` has a value it can look a header up by, and
+        `eth_getBlockByHash` was measured answering on this chain. The
+        lowercase-hex form is the same rule `robinhood-protocol-api.Address`
+        sets, so no consumer re-parses a wire quantity to compare two hashes.
+    parent_hash:
+      description: >
+        The parent's hash. Chain continuity: it is the only field here that
+        says this header is on the same chain as the one before it, and a
+        mismatch means every state derived from the pair is wrong.
+      type: string
+      pattern: "^0x[0-9a-f]{64}$"
+      x-wire-name: parentHash
+      x-why: >
+        WEAKEST OF THE FIVE, and kept for a reason rather than for a consumer.
+        No capability reads it today. What it buys is that continuity is a
+        CHECKABLE property: a replay that walks headers can assert each
+        header's `parent_hash` is the previous header's `hash`, which is the
+        cheapest available evidence that the chain it is replaying did not
+        change under it. `robinhood-replay-api` promises a total order over
+        (block_number, transaction_index, log_index) but says nothing about
+        verifying the chain those blocks hang off, so this field is where
+        that check would live. If no replay capability ever reads it, this is
+        the first field to cut — the note is here so that decision is a
+        deliberate one rather than an oversight.
+    timestamp:
+      description: >
+        Unix seconds, and THE ONLY TIME VALUE IN THIS ARCHITECTURE. The log
+        object's own timestamp field reads zero on this deployment and was
+        retired from `LogRecord` by Owner decision, so the time of a log is
+        the timestamp of the header at that log's `block_number`. Nothing else
+        in this repository carries a clock.
+      type: integer
+      minimum: 0
+      x-wire-name: timestamp
+      x-why: >
+        LOAD-BEARING, and it earned its place by substitution. Owner ruled on
+        2026-10-02 that `blockTimestamp` is not data — it read 0x0 on all 1351
+        logs read, at two blocks more than two million apart — and the
+        replacement is this field plus a `block_number` to address it with. That
+        makes this the only path from a log to a time, which is also why it is
+        a hard `integer` and not a nullable: a log with no computable time
+        would mean a header read failed, and that is an error rather than a
+        value. Coordinates: architecture/project.yaml -> endpoint_facts, "the
+        log object carries a blockTimestamp that reads zero", chain 4663,
+        endpoint https://rpc.mainnet.chain.robinhood.com, retrieved 2026-10-02.
+    transactions:
+      description: >
+        The block's transaction hashes, in order. NON-HYDRATED: an array of
+        32-byte hashes and nothing else. An element that is an object is
+        refused, which is what makes "non-hydrated" a thing a test can assert
+        rather than a word in a description.
+      type: array
+      items:
+        type: string
+        pattern: "^0x[0-9a-f]{64}$"
+      x-wire-name: transactions
+      x-note: >
+        May be empty. A block with no transactions is a value, not an absence,
+        so this is not `minItems: 1`.
+      x-why: >
+        SECOND-WEAKEST OF THE FIVE, and it is here on the CONTRACT'S WORD plus
+        one fact, not on a consumer. The contract's own adjective is
+        "non-hydrated", and that adjective is a property of this object: a
+        decoder that hydrated transactions would return megabytes per block
+        where a header is meant to be a few hundred bytes, so the constraint
+        is what makes `eth_getBlockByHash` and `eth_getBlockByNumber` cheap
+        enough to call per block. Verified on both methods: the array held
+        32-byte hex strings on the 2026-10-02 reads. Beyond that, no capability
+        reads it, and unlike `parent_hash` there is no consumer-shaped argument
+        for it beyond "the contract said non-hydrated, so this is the field
+        that carries the adjective". If the header is ever wanted as a bare
+        identity-plus-time value, this is the other field to cut.
+  x-note-which-five: >
+    Why these five, stated so a later reader can disagree with a specific
+    field rather than with the type. `number`, `hash` and `parent_hash` are the
+    block's identity and its continuity. `timestamp` is the only clock this
+    architecture has. `transactions` is named by the capability's own adjective
+    "non-hydrated", which is a property of the whole object rather than of any
+    one field. Of the five, `parent_hash` and `transactions` are the weakest
+    claims — no declared consumer reads either today — and they are the first
+    two a later reader should challenge.
+  x-wire-ignored: >
+    Wire fields this deployment returns and this type does NOT publish. A
+    decoder drops them.
+
+    Fourteen standard: difficulty, extraData, gasLimit, gasUsed, logsBloom,
+    miner, mixHash, nonce, receiptsRoot, sha3Uncles, size, stateRoot,
+    transactionsRoot, uncles.
+
+    Four specific to this chain, and the reason the first version of this
+    schema DEMANDED them: a strict decoder written against the Ethereum
+    JSON-RPC block object throws on a real response from this endpoint,
+    precisely because these four are there and `totalDifficulty` is not.
+
+      baseFeePerGas    0x172d980 at block 0x48ad6c0 — EIP-1559 base fee, the
+                       one of the four whose meaning is not in question
+      l1BlockNumber    0x18e1128 — meaning UNKNOWN in this repository
+      sendCount        0xb37      — meaning UNKNOWN
+      sendRoot         0xd85d55b464c9971287a5d516a3ddb19635a27e3b0592f41c5fa44331de32b70a
+                       — meaning UNKNOWN
+
+    The hazard is real and is now handled by NAMING rather than by REQUIRING.
+    A decoder must tolerate all four keys; a type that demands them puts the
+    same hazard into the published value, where three of the four carry a
+    meaning nobody here has established and no capability here reads. Demand is
+    a claim that the value is wanted; tolerance is a claim that the key exists.
+    Only the second one is true of `sendCount`. Adding any of the four to
+    `properties` is additive, and needs a consumer to justify it.
+  x-note-absent: >
+    `totalDifficulty` is ABSENT from this chain's block object, and that
+    absence is enforced rather than merely tolerated: with
+    `additionalProperties: false`, a header carrying `totalDifficulty` does not
+    validate. A decoder that requires the field — the pre-merge shape, which
+    most Ethereum documentation still shows — throws on a real response from
+    this deployment. Relaxing `additionalProperties` would turn this refusal
+    back into a tolerance and lose the only check that the absence still
+    holds.
+  x-source: >
+    robinhood-rpc-api rpc.adapter.block_header signature and description;
+    architecture/project.yaml -> endpoint_facts, "the block object carries four
+    fields the Ethereum JSON-RPC block object does not", chain 4663, blocks
+    0x48ad6c0 and 0x4a4c810, endpoint https://rpc.mainnet.chain.robinhood.com,
+    retrieved 2026-10-02
+
+# --- the log query ----------------------------------------------------------
+
+TopicFilter:
+  description: >
+    The closed pool-scoped query `rpc.adapter.logs` issues, and nothing else:
+    `topic0 IN (<topic0>) AND topic1 = <pool_id>`, over one address. The block
+    range is NOT here — it is the capability's own `from_block` / `to_block`
+    parameters, and a filter carrying a range would be the window this contract
+    keeps out of shared types.
+  type: object
+  additionalProperties: false
+  required: [address, pool_id, topic0]
+  properties:
+    address:
+      description: >
+        The emitting contract, lowercase. On this deployment that is the V4
+        PoolManager; the value is not frozen here because the contract calls
+        the closure a property of this ADAPTER and not of the deployment, and a
+        constant address in a schema would make it a property of both.
+      type: string
+      pattern: "^0x[0-9a-f]{40}$"
+      x-why: >
+        Required because the query the contract specifies is scoped to ONE
+        address — `topic0 IN (...) AND topic1 = <poolId>` over an address — and
+        a filter without it is the unbounded query that returns every
+        `Transfer` and unidentified log this adapter does not decode. Not
+        frozen to the PoolManager value: the contract calls the closure a
+        property of this ADAPTER, so a constant here would promote it to a
+        property of the deployment, and a second deployment on this chain would
+        then fail to validate against a correct filter.
+    pool_id:
+      description: >
+        The pool, as the value all five events put in `topics[1]`. A full
+        32-byte hash on every one of the five, and recomputing
+        keccak256(abi.encode(PoolKey)) from an `Initialize` log reproduces it
+        exactly.
+      type: string
+      pattern: "^0x[0-9a-f]{64}$"
+      x-equal-to: robinhood-protocol-api.PoolId
+      x-note: >
+        The same value as `robinhood-protocol-api.PoolId`, declared here by
+        pattern rather than by `$ref`. Every `$ref` in this directory is
+        intra-file because a cross-file one would need a resolved base URI,
+        and that decision has not been made (README.md). Do not declare a
+        second `PoolId` — two contracts declaring one name is SCHEMA_AMBIGUOUS.
+      x-why: >
+        Required, and it is the half of the query that makes the read
+        POOL-SCOPED rather than address-scoped: the address emits logs this
+        adapter does not decode, and topic1 is what separates the five pool
+        events from the rest. Its value is a full 32-byte hash on all five
+        events, verified by recomputing keccak256(abi.encode(PoolKey)) from an
+        `Initialize` log and reproducing it exactly. Required rather than
+        optional because a filter with no topic1 is the "every event at this
+        address" mode again, one position over.
+    topic0:
+      description: >
+        A NON-EMPTY SUBSET of the five constants. This is where the contract's
+        "a caller MAY narrow this set with a subset, and may not widen it"
+        becomes refusable rather than advisory.
+      type: array
+      minItems: 1
+      uniqueItems: true
+      x-why: >
+        Required, and the `minItems: 1` on it is the single most load-bearing
+        constraint in this file after `additionalProperties: false`. The
+        contract's rule is that a caller "MAY narrow this set with a subset,
+        and may not widen it" — an advisory sentence that no test can check.
+        `minItems: 1` and the `enum` together make both halves refusable: an
+        empty list would be "every event at this address", which is a VALID
+        JSON-RPC query returning logs the adapter cannot decode, and a value
+        outside the five is not in the enum at all. See `x-note` for the full
+        argument and `x-note-protocol-fee` for the one event whose omission is
+        a correctness bug rather than a narrowing.
+      items:
+        type: string
+        enum:
+          - "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438"   # Initialize
+          - "0xf208f4912782fd25c7f114ca3723a2d5dd6f3bcc3ac8db5af63baa85f711d5ec"   # ModifyLiquidity
+          - "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"   # Swap
+          - "0x29ef05caaff9404b7cb6d1c0e9bbae9eaa7ab2541feba1a9c4248594c08156cb"   # Donate
+          - "0xe9c42593e71f84403b84352cd168d693e2c9fcd1fdbcc3feb21d92b43e6696f9"   # ProtocolFeeUpdated
+      x-note-why-no-max-items: >
+        There is deliberately NO `maxItems`, and its absence is a decision, not
+        an oversight. `maxItems: 5` was here until 2026-10-03 and it was dead:
+        the `enum` has exactly five members and `uniqueItems: true` forbids
+        repeats, so a list longer than five cannot be assembled at all and
+        removing the keyword changes no verdict. A constraint that can never
+        decide anything is worse than no constraint, because it reads as
+        though the bound were considered and reached when in fact the enum
+        closed it two keywords earlier. If a sixth topic0 constant is ever
+        added, `maxItems` still does not come back — the enum is the bound, and
+        it moves when the closure moves.
+      x-note: >
+        `minItems: 1` is the load-bearing half. An empty topic0 list is how
+        JSON-RPC spells "every event at this address", which is precisely the
+        "any other PoolManager log" mode the contract rules out — and it would
+        not be a typo the endpoint catches, it is a valid query that returns
+        the `Transfer` and unidentified logs this adapter does not decode.
+        `enum` is the other half: widening is impossible because a value
+        outside the five is not in the list, so the v4-core `main` signatures
+        (where `PoolId` is ABI-typed `address`, and whose topic0 values match
+        zero logs on this chain and appear nowhere in the deployed bytecode)
+        cannot be expressed here at all.
+      x-note-closure: >
+        The closure is a FILTER contract, and it is about this adapter. The
+        address does emit other logs — `Transfer(...)` in every sampled window,
+        and an unidentified topic0 seen twice in ~480000 blocks, UNKNOWN what
+        it is. Nothing here claims the five are every log the address can
+        produce; the claim is that nothing outside the five can be ASKED for.
+        Coordinates: architecture/project.yaml -> contracts.pool_manager ->
+        reverification, chain 4663, block 0x48b9e3f, retrieved 2026-09-30.
+  x-note-protocol-fee: >
+    `ProtocolFeeUpdated` is in the enum because dropping it from a stream is a
+    correctness bug and not a performance choice: it changes `slot0.protocolFee`,
+    which is deducted before `feeGrowthGlobal0X128` accumulates, so a stream
+    without it replays fee growth against a stale protocol fee and returns a
+    `tokens_owed` that is wrong and looks entirely reasonable. A subset that
+    omits it is narrower, which the contract permits; the four pool events
+    reading as a complete set is the mistake.
+  x-source: >
+    robinhood-rpc-api rpc.adapter.logs description — the five topic0
+    constants, the `topic0 IN (...) AND topic1 = <poolId>` query shape, the
+    narrow-but-not-widen clause, and the bytes32-PoolId derivation
+
+# --- one log ---------------------------------------------------------------
+
+LogRecord:
+  description: >
+    One log record as `rpc.adapter.logs` returns it: parsed, with block numbers
+    and indices as integers and hashes as lowercase hex.
+
+    THERE IS NO TIME FIELD ON THIS RECORD, and the absence is deliberate. The
+    log object on this deployment does carry `blockTimestamp`; it read 0x0 on
+    all 1351 logs read, at two blocks more than two million apart, while the
+    containing block's own timestamp read 0x6abf2393. A field that is always
+    zero is not a timestamp, so it is not here — not required, not optional,
+    not described. TIME COMES FROM `BlockHeader.timestamp`, addressed by this
+    record's `block_number`: read the header at that height. That is the whole
+    of the replacement, and a reader who wants the time of a log should not go
+    looking for it here.
+  type: object
+  additionalProperties: false
+  required:
+    - address
+    - topics
+    - data
+    - block_number
+    - block_hash
+    - transaction_hash
+    - transaction_index
+    - log_index
+    - removed
+  properties:
+    address:
+      description: The emitting contract, lowercase.
+      type: string
+      pattern: "^0x[0-9a-f]{40}$"
+      x-why: >
+        The one field that says a record came from where the filter said it
+        would. `TopicFilter` already constrains the query to a single address,
+        so this is redundant with the filter and earns its place as the check
+        rather than the input: a decoder that projects it lets a consumer
+        assert every record it decoded came from the address it asked about,
+        and on this deployment that address also emits logs the five constants
+        do not name (`Transfer(...)` in every sampled window, plus an
+        unidentified topic0 seen twice in ~480000 blocks whose meaning is
+        UNKNOWN here). Coordinates: architecture/project.yaml ->
+        contracts.pool_manager -> reverification, chain 4663, block 0x48b9e3f,
+        retrieved 2026-09-30.
+    topics:
+      description: >
+        topic0 is the event signature hash, topic1 is the pool id — which is
+        why `TopicFilter` can pin both positions. NOT bounded above: the count
+        is the number of indexed parameters in the deployed event ABI, and a
+        maximum here would freeze an observation of a sample into a constraint
+        on the ABI.
+      type: array
+      minItems: 2
+      items:
+        type: string
+        pattern: "^0x[0-9a-f]{64}$"
+      x-why: >
+        THE DECODING FIELD. Everything a consumer knows about WHICH event this
+        is and WHICH pool it happened to is here and nowhere else — which is
+        why neither `pool_id` nor `event` is a field of its own (see
+        `x-note-no-duplicates`). It is the reason `TopicFilter` can pin
+        positions rather than patterns: the contract states all five events
+        take `PoolId` as their first indexed parameter, so topic0 is the
+        signature and topic1 is the pool, on every one of the five.
+      x-note: >
+        `minItems: 2` and not 1, because the contract states that all five
+        events take `PoolId` as their first indexed parameter and that topic1 is
+        a full 32-byte hash on every one of the five — so no record this
+        capability returns can have fewer than two. Observed counts on this
+        deployment: 2 for `ProtocolFeeUpdated`, 3 for `Swap` and
+        `ModifyLiquidity`, 4 for `Initialize`. `Donate` returned no logs in the
+        ranges sampled here, which is why no maximum is declared.
+    data:
+      description: >
+        The unindexed payload, as opaque hex bytes and possibly empty. NOT
+        decoded here: which words mean what is event-specific, and decoding an
+        event's payload is not this capability's job. A strict decoder that
+        rejected an unexpected word count would throw on a valid log, and the
+        shape that survives is bytes with no opinion about their contents.
+      type: string
+      pattern: "^0x([0-9a-f]{2})*$"
+      x-why: >
+        Required rather than optional because the contract's `topics[]` /
+        data-payload clause makes the two halves of an event one unit: a
+        consumer that saw topics without data would be reading half an event,
+        and the events in this closure differ in how much goes in each half
+        (observed topic counts 2, 3 and 4). Required AND permitted to be
+        empty, which is the one place where those two facts are not in
+        tension — an event with no unindexed data yields `0x`, and a decoder
+        that rejected that would throw on a valid record.
+    block_number:
+      description: >
+        Block the log was mined in, and the address at which its time is read:
+        `BlockHeader.timestamp` at this height.
+      type: integer
+      minimum: 0
+      x-wire-name: blockNumber
+      x-why: >
+        LOAD-BEARING TWICE OVER. It is the first of the three ordering keys
+        `robinhood-replay-api` promises a total order on, and it is the
+        ADDRESS at which this record's time is read: `blockTimestamp` was
+        retired from this type by Owner decision, so the only route from a log
+        to a clock is a header read at this height. A field that is both the
+        sort key and the join key to the clock is not a field that can be
+        optional.
+    block_hash:
+      description: Hash of that block.
+      type: string
+      pattern: "^0x[0-9a-f]{64}$"
+      x-wire-name: blockHash
+      x-why: >
+        Required, and the load-bearing consumer is the `BlockRef` hash branch:
+        this is the value a caller hands to `eth_getBlockByHash` when it wants
+        the full header for the block a log came from, and that method was
+        measured answering on this chain. Without this field the hash form of
+        `BlockRef` would have no key anywhere in the data, and the branch
+        would be vocabulary with nothing behind it. It is also what makes a
+        reorg detectable per record — `removed` says the endpoint flagged it,
+        this says which block to distrust.
+    transaction_hash:
+      description: Hash of the transaction that emitted the log.
+      type: string
+      pattern: "^0x[0-9a-f]{64}$"
+      x-wire-name: transactionHash
+    transaction_index:
+      description: >
+        Index of the transaction within the block. Part of the total order and
+        of the duplicate key, required for that reason rather than because the
+        endpoint sends it.
+      type: integer
+      minimum: 0
+      x-wire-name: transactionIndex
+      x-why: >
+        Second of the ordering triple (block_number, transaction_index,
+        log_index) that `robinhood-replay-api` promises a total order over.
+        Required for that reason and not because the endpoint sends it — the
+        endpoint would send all three and the ordering promise would still be
+        unimplementable if any of them were nullable. Two logs in one block
+        from the same transaction are ordered by log_index; two from different
+        transactions are ordered by this.
+    log_index:
+      description: Index of the log within the block. Third of the ordering triple.
+      type: integer
+      minimum: 0
+      x-wire-name: logIndex
+      x-why: >
+        Third of the same ordering triple, and the one that makes the order
+        TOTAL: (block_number, log_index) alone collides on every block with
+        more than one transaction emitting a log. Nothing else in the type
+        orders records within a block, and the replay contract's total-order
+        promise is unimplementable without it.
+    removed:
+      description: >
+        Whether the endpoint has marked this log as removed by a reorg.
+        Declared, not invented: it was present on every log read. It is
+        required but NOT pinned to false — what an adapter or a replayer must
+        DO with a `true` is not decided anywhere in this architecture, and
+        pinning the field to a constant would make that open question
+        unrepresentable instead of unanswered.
+      type: boolean
+      x-wire-name: removed
+      x-why: >
+        Required because it was present on every log read, and required
+        BOOLEAN rather than pinned to `false` because the question it opens —
+        what an adapter or a replayer must DO with a `true` — is not decided
+        anywhere in this architecture. Pinning it to a constant would make
+        that open question unrepresentable rather than unanswered, which is
+        strictly worse: a value nobody has a policy for should arrive as a
+        value, and a consumer that ignores it is a consumer with a bug, not a
+        consumer that was told the field cannot be true. Coordinates: the log
+        reads behind architecture/project.yaml -> endpoint_facts, chain 4663,
+        endpoint https://rpc.mainnet.chain.robinhood.com, retrieved 2026-10-02;
+        no log with `removed: true` was observed, so whether this
+        deployment's endpoint ever sets it is UNKNOWN.
+  x-note-no-duplicates: >
+    Neither `pool_id` nor `event` appears as a field, though both are readable
+    here: the pool id is `topics[1]` and the event is `topics[0]`. A field
+    that could be computed from a field already present has no job — a consumer
+    that trusted `pool_id` would have two sources of truth for one value and no
+    way to learn which one a decoder filled in.
+  x-note-no-window: >
+    No range and no window, deliberately. How far back logs are served is far
+    wider than how far back state is served, and it moves; a range folded into
+    this type would be a claim about one host at one moment sitting in a place
+    every downstream Card would read as settled. The bounds arrive as the
+    capability's own `from_block` / `to_block` parameters.
+  x-wire-ignored: >
+    ONE field: `blockTimestamp`. The raw log object carries it on every record
+    and this type does not publish it, so a decoder MUST drop it.
+
+    `additionalProperties: false` stays, and the allowance is named here rather
+    than left implicit — because a schema every genuine instance fails is the
+    same silent defect as a filter that matches nothing and returns an empty
+    stream with no error, which this repository has already retired once. The
+    alternative, relaxing `additionalProperties` so the key validates through,
+    was considered and rejected: it leaves `topics[i]`, `data` and the three
+    ordering fields unconstrained against a misspelled name, and a misspelled
+    constraint is a constraint nobody is enforcing. The key is dropped on the
+    way in, which a test can assert — the returned record has no
+    `blockTimestamp` key — whereas an open `additionalProperties` has nothing
+    to assert.
+  x-source: >
+    robinhood-rpc-api rpc.adapter.logs signature (`list[LogRecord]`) and the
+    `topics[]` / data-payload clause; robinhood-replay-api, whose description
+    promises total ordering on (block_number, transaction_index, log_index) —
+    which is why all three are required rather than optional; architecture/
+    project.yaml -> endpoint_facts, "the log object carries a blockTimestamp
+    that reads zero", chain 4663, endpoint
+    https://rpc.mainnet.chain.robinhood.com, retrieved 2026-10-02
+
+# --- the endpoint capability report ------------------------------------------
+
+CapabilityReport:
+  description: >
+    What one probe found about the endpoints it was pointed at, with every
+    window stated as a count AND the block it was measured at. One entry per
+    url, because the signature takes `urls: list[str]` and returns one report,
+    and because the limits are per-host: a number measured on one endpoint is
+    not a fact about another.
+  type: object
+  additionalProperties: false
+  required: [endpoints]
+  properties:
+    endpoints:
+      type: array
+      minItems: 1
+      items:
+        type: object
+        additionalProperties: false
+        required:
+          - url
+          - measured_at_block
+          - state_block_window
+          - log_block_window
+          - archive_supported
+          - finality
+        properties:
+          url:
+            description: >
+              The endpoint these numbers describe, spelled as it was probed.
+              Present so a report covering two endpoints cannot be read as one
+              measurement.
+            type: string
+            minLength: 1
+            x-why: >
+              The signature takes `urls: list[str]` and returns one report, so
+              without a per-entry url a two-endpoint report is two sets of
+              numbers with nothing saying which host produced which. The
+              capability's own description makes the endpoints a list for a
+              reason: the limits are per-host and a number measured on one
+              endpoint says nothing about another. Second endpoint's limits
+              here are UNKNOWN — all measurements in this repository come from
+              the official endpoint.
+          measured_at_block:
+            description: >
+              The block every window below was measured AGAINST, and the reason
+              the windows are counts rather than block numbers. A bare count is
+              the defect this capability was rewritten to remove one layer
+              down: "state served to block 76000000" means nothing without the
+              head it was 6000 behind.
+            type: integer
+            minimum: 0
+            x-why: >
+              A count alone is the defect this capability was rewritten to
+              remove one layer down: "state served to block 76000000" is
+              unreadable without the head it was 6000 behind, and the head
+              moves. It is required rather than optional because a window
+              reported without its block cannot be compared against anything,
+              which is the entire purpose of the probe. It is also the field
+              that would be filled by a capability reading the head — and
+              `eth_blockNumber` is in the closed method set with no capability
+              behind it, which is why this says "measured against" and does
+              not say who measured it.
+          state_block_window:
+            description: >
+              How many blocks back from `measured_at_block` this endpoint
+              served historical STATE for. Null when the probe did not
+              establish it — and null is a reportable result, because a
+              rolling window whose edge moved twice in one afternoon cannot be
+              reported as a number the probe did not actually measure.
+            type: [integer, "null"]
+            minimum: 0
+            x-why: >
+              This is the window a STATE read has to live inside — the width of
+              the range over which `eth_call` answers. Null is a real result
+              rather than a missing one, because a rolling window whose edge
+              moved twice in one afternoon is not a number the probe
+              measured. Required even when null, so "the probe did not
+              establish it" is distinguishable from "this endpoint has no
+              limit", which are different answers to the same question.
+          log_block_window:
+            description: >
+              How many blocks back from `measured_at_block` this endpoint served
+              LOGS for. Separate from `state_block_window` and never derived
+              from it: on the measured endpoint logs were served from
+              head-1000000 while state was not, so one "block range cap" is a
+              number that is wrong for one of the two consumers — which is the
+              consumer that fetches a wide log range and then reads state across
+              it and hits the state edge partway through.
+            type: [integer, "null"]
+            minimum: 0
+            x-why: >
+              THE REASON THESE ARE TWO FIELDS AND NOT ONE. The contract asks
+              for the state and log windows as SEPARATE numbers, and the
+              measurement is why that ask is not pedantry: on the measured
+              endpoint logs were served from head-1000000 while state was not.
+              One "block range cap" would be a number that is wrong for one of
+              the two consumers, and the consumer it is wrong for is the one
+              that fetches a wide log range and then reads state across it and
+              hits the state edge partway through — a run that fails in the
+              middle rather than at the start. Collapsing them would also make
+              the two `null`s indistinguishable, so a probe that established
+              neither could not say so. Coordinates: architecture/project.yaml
+              -> endpoint_facts, chain 4663, endpoint
+              https://rpc.mainnet.chain.robinhood.com, retrieved 2026-10-02.
+          archive_supported:
+            description: >
+              Whether a state read far outside `state_block_window` succeeded.
+              Null when not established. An observation, not a vendor flag:
+              nothing asks the endpoint whether it is an archive node, and the
+              window above is not evidence either way.
+            type: [boolean, "null"]
+            x-why: >
+              An observation rather than a vendor flag, and null when not
+              established, because nothing asks the endpoint whether it is an
+              archive node — a `true` here means one far read succeeded, and
+              nothing more. The contract names archive support as one of the
+              four things this probe reports, which is what puts it in the
+              type; the second endpoint's answer is UNKNOWN.
+          finality:
+            description: >
+              One entry per block tag, each carrying the two things the probe
+              actually observed at `measured_at_block`. Kept as an observation
+              rather than an interpretation, because "which tag is final" is a
+              judgement about the chain that no probe can make from a handful
+              of reads, while "which tags answered" and "which of those served
+              state" are two measurements.
+            type: array
+            minItems: 4
+            maxItems: 4
+            uniqueItems: true
+            x-note-why-total: >
+              EXACTLY FOUR ENTRIES, one per tag, always. A partial array would
+              bring back the ambiguity this shape exists to remove: an absent
+              tag would mean both "the probe did not test this" and "the probe
+              tested it and it failed", and those are different answers to the
+              same question. Making the array total means every tag is spoken
+              for, so a caller never has to guess what a missing entry meant.
+
+              This is also what makes the tags unique. `uniqueItems: true` on an
+              array of objects refuses only EXACT duplicates, so two entries for
+              `latest` carrying different flags would both pass it — one
+              measurement with two sources of truth, which is the defect
+              `LogRecord` avoids by not declaring `pool_id` and `event` as
+              fields when they are `topics[1]` and `topics[0]`. Here the
+              uniqueness is arithmetic instead: four entries and four `contains`
+              clauses, one per tag, over a four-member enum. `maxContains`
+              would say it more directly and is NOT used, because it arrived in
+              JSON Schema 2019-09 and this directory validates as draft-07,
+              where it is silently ignored — a constraint that looks present
+              and decides nothing.
+            x-note-implication: >
+              `state_served: true` REQUIRES `block_resolved: true`, and the
+              requirement is structural rather than written into a description:
+              each entry carries `if`/`then`, so a caller reporting that state
+              was served without also reporting that the block resolved
+              produces a self-contradictory entry and the report does not
+              validate. The two-array shape this replaced could not say that —
+              `resolved_tags` paired with a `state_served_tags` naming a tag it
+              did not contain validated cleanly, and a relation between two
+              independent arrays is not something JSON Schema can express.
+            allOf:
+              - contains: {properties: {tag: {const: latest}}, required: [tag]}
+              - contains: {properties: {tag: {const: safe}}, required: [tag]}
+              - contains: {properties: {tag: {const: pending}}, required: [tag]}
+              - contains: {properties: {tag: {const: finalized}}, required: [tag]}
+            x-why: >
+              The distinction the old two-array shape existed to preserve is
+              intact and now readable per tag: on the measured endpoint
+              `finalized` reports `block_resolved: true, state_served: false` —
+              the block was known and its state was not served, and `eth_call`
+              at `finalized` raised RPC_BLOCK_STATE_UNAVAILABLE. Coordinates:
+              architecture/project.yaml -> endpoint_facts, "eth_call cannot
+              serve a `finalized` block on this endpoint", chain 4663, block
+              0x48b76f1, endpoint https://rpc.mainnet.chain.robinhood.com,
+              retrieved 2026-09-30.
+            items:
+              type: object
+              additionalProperties: false
+              required: [tag, block_resolved, state_served]
+              properties:
+                tag:
+                  description: >
+                    The block tag this entry reports on. The enum reuses
+                    `BlockRef`'s four tags rather than declaring a second tag
+                    vocabulary: two contracts declaring one name is
+                    SCHEMA_AMBIGUOUS, and these are the same four by the same
+                    contract clause. All four answered on the measured endpoint
+                    at block 0x48b76f1, retrieved 2026-09-30.
+                  type: string
+                  enum: [latest, safe, pending, finalized]
+                block_resolved:
+                  description: >
+                    Whether `eth_getBlockByNumber` answered for this tag. False
+                    is a real answer — the tag exists and the endpoint did not
+                    resolve it — which is why this is a required boolean and not
+                    an absent entry.
+                  type: boolean
+                state_served:
+                  description: >
+                    Whether an `eth_call` at this tag ALSO answered. False here
+                    alongside `block_resolved: true` is the measured case for
+                    `finalized`, and it is the fact a caller needs: the block is
+                    known and its state was not served.
+                  type: boolean
+              allOf:
+                - if:
+                    properties: {state_served: {const: true}}
+                    required: [state_served]
+                  then:
+                    properties: {block_resolved: {const: true}}
+              x-why-both-flags: >
+                Both flags are required on every entry. Neither is derivable
+                from the other, and neither is derivable from the presence of
+                the entry — a total array of four entries says nothing about
+                which of them resolved anything, so the measurements have to be
+                there.
+        x-note-window-not-a-constant: >
+          Nothing here defaults to a measured number. The ~6000-block state
+          window, the ~1000000-block log window, the 10000-result log cap and
+          the 30000- and 10000000-block range caps are measurements from
+          architecture/project.yaml -> endpoint_facts, at named blocks on one
+          host; a default carrying any of them would be a probe that reports a
+          remembered number instead of a measured one, which is the failure
+          this capability exists to remove. A window the probe could not
+          establish is null, never a fallback constant.
+        x-note-cap-vs-window: >
+          The result-count cap and the block-range cap are NOT fields here. The
+          contract names four things this capability reports — measured block
+          range cap, log interval cap, archive support, finality — and the two
+          caps it does not name are properties of one host's query limits, read
+          from the endpoint's own error text when it rejects a query. Adding
+          them would be adding a capability to a schema; the four are here
+          because the contract asked for them.
+  x-source: >
+    robinhood-rpc-api rpc.adapter.capability_probe — the four things it
+    reports, the requirement that the state and log windows be SEPARATE numbers,
+    and the requirement that the window be reported against the block it was
+    measured at

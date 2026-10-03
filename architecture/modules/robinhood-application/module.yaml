@@ -17,6 +17,22 @@ depends_on:
       - protocol.pool_key.parse
       - protocol.identity.chain_id.parse
     reason: validate PoolKey / ChainId at the composition root before constructing the use case request
+  - contract: robinhood-rpc-api
+    uses:
+      - rpc.adapter.capability_probe
+      - rpc.adapter.logs
+      - rpc.adapter.block_header
+    reason: >
+      application.ingest.run is the consumer, and it is the only capability in
+      this contract that reads anything not already in storage. "plan ranges,
+      route by capability, write to storage" needs capability_probe to learn
+      what an endpoint will serve, logs to fetch the range, and block_header to
+      resolve the range's bounds; without this entry the read path has no plug
+      at the source and the composition root is declared against nine modules
+      while wiring eight. rpc.adapter.call is deliberately absent: no
+      capability of robinhood-application-api names a pinned state read, and an
+      itemised uses entry with no consumer capability behind it is a claim
+      rather than a use.
   - contract: robinhood-storage-api
     uses:
       - storage.reader.read_partition
@@ -61,6 +77,7 @@ readable_extra:
   - modules/robinhood-features/api/**
   - modules/robinhood-protocol/api/**
   - modules/robinhood-replay/api/**
+  - modules/robinhood-rpc/api/**
   - modules/robinhood-risk/api/**
   - modules/robinhood-signer/api/**
   - modules/robinhood-storage/api/**

@@ -1397,7 +1397,7 @@ def cmd_dependers_of(args: argparse.Namespace) -> int:
     the modules whose module.yaml `uses:` it. STATE is then layered on top,
     so the dispatcher can see which dependers have actually started.
     """
-    arch = load_arch()
+    arch = load_arch(REPO_ROOT)
     root = Path(args.root) if args.root else STATE_ROOT
     found = _provider_of(arch, args.capability)
     if found is None:
@@ -1446,7 +1446,7 @@ def cmd_upstream(args: argparse.Namespace) -> int:
     dispatcher knows which specific capabilities a given Card consumes;
     without it the gate is deliberately the wider, safe one.
     """
-    arch = load_arch()
+    arch = load_arch(REPO_ROOT)
     root = Path(args.root) if args.root else STATE_ROOT
     try:
         mod = arch.module(args.module)

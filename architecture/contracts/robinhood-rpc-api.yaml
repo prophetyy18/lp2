@@ -1,10 +1,76 @@
 name: robinhood-rpc-api
 version: 3
 description: >
-  Bounded JSON-RPC adapter. The only RPC surface V1 exposes is the
-  closed method set in T020 (eth_blockNumber, eth_getBlockByNumber,
-  eth_getLogs, eth_getTransactionReceipt, eth_call, eth_chainId,
-  eth_getCode). No arbitrary RPC, no signing, no broadcasting.
+  Bounded JSON-RPC adapter. The only RPC surface V1 exposes is this
+  closed method set of eight methods, and the same eight appear in
+  robinhood-rpc/module.yaml, which is the other half of one declaration:
+  eth_blockNumber, eth_getBlockByNumber, eth_getBlockByHash, eth_getLogs, eth_getTransactionReceipt, eth_call, eth_chainId, eth_getCode.
+  No arbitrary RPC, no signing, no broadcasting.
+
+  WHY THE SET IS EIGHT AND NOT MORE, AND WHY NOT FEWER. A closed set is a
+  boundary claim, and a boundary claim has to be checkable from both sides:
+  every method in it must be one this adapter may actually speak, and every
+  method it may speak must be in it. Adding a method the chain does not
+  serve widens a boundary nothing can enforce; dropping a method the chain
+  does serve narrows one on the strength of a guess. The three methods below
+  marked NO CONSUMER are in the set for the second reason — they are not
+  there because something calls them, and their staying or going is a
+  decision for the Owner, not a consequence of a grep.
+
+  `eth_getBlockByHash` was added on 2026-10-02 and it is here on evidence,
+  not on the strength of a list: it was read against this chain at a pinned
+  block and answered. See the `BlockRef` hash form and
+  architecture/project.yaml -> endpoint_facts.
+
+  # THE SET, ITEM BY ITEM. `who` = the capability in this repository that
+  # calls it; `basis` = verified against this chain, or named by a clause of
+  # this contract, or UNKNOWN; `type` = the declared shape it returns, or
+  # none.
+  #
+  #   eth_blockNumber            who: NONE. basis: named by this set, not
+  #     verified here. type: none. DISPOSITION: it is the operation that
+  #     would fill CapabilityReport.measured_at_block, so it has a job nobody
+  #     has written down yet. Whether V1 needs it is UNKNOWN and it is the
+  #     Owner's call.
+  #   eth_getBlockByNumber       who: rpc.adapter.block_header, and the
+  #     bounded read rpc.adapter.logs issues per sub-range. basis: verified.
+  #     type: BlockHeader.
+  #   eth_getBlockByHash         who: NONE today. basis: VERIFIED 2026-10-02,
+  #     chain 4663, block 0x48ad6c0, and the returned object agreed field for
+  #     field with the by-number read of the same height. type: BlockHeader —
+  #     the same one, which is why no new type came with the method. It stays
+  #     on the reasoning in the `BlockRef` hash branch: LogRecord.block_hash
+  #     and BlockHeader.hash are required, so the key is already in the data.
+  #   eth_getLogs                who: rpc.adapter.logs. basis: verified.
+  #     type: LogRecord.
+  #   eth_getTransactionReceipt  who: NONE. basis: VERIFIED 2026-10-02, chain
+  #     4663, blocks 0x4aac83b and 0x4aa0564 — sixteen fields, `l1BlockNumber`
+  #     and `gasUsedForL1` beyond the Ethereum receipt object, and the two
+  #     extras carry different values on the two reads, so neither is a
+  #     constant. type: NONE, and that is the whole problem: a method with no
+  #     capability, no consumer and no type is three absences at once, and this
+  #     is the one item in the set where that should be put to the Owner. The
+  #     fact that decides whether a receipt capability is implementable for V1
+  #     is that the method takes ONE argument here — a second is refused with
+  #     -32602 "too many arguments, want at most 1", whether it is a height or
+  #     the EIP-1898 object — so a receipt read carries no block pin while every
+  #     other read in this contract is addressed by one. It is NOT an age
+  #     cutoff: a receipt 50000 blocks back was served on the same day, which
+  #     refutes an earlier claim in this file that a receipt is readable only
+  #     "as of the current canonical tip".
+  #   eth_call                   who: rpc.adapter.call. basis: verified,
+  #     including the one asymmetry the contract depends on (`finalized`
+  #     resolves as a block but does not serve state). type: bytes.
+  #   eth_chainId                who: rpc.adapter.chain_id, and the comparison
+  #     the composition root makes before any other call. basis: verified.
+  #     type: ChainId.
+  #   eth_getCode                who: NONE. basis: named by this set only; no
+  #     read against this chain is recorded in architecture/project.yaml.
+  #     type: none. DISPOSITION: UNKNOWN whether V1 needs it. It is retained
+  #     rather than dropped for the reason above — this repository's silence
+  #     about it is evidence about this repository — but unlike
+  #     eth_getTransactionReceipt nothing was measured, so it is the weaker
+  #     of the two and the first a reader should challenge.
 
 requires:
   - robinhood-protocol-api
@@ -195,3 +261,50 @@ provides:
 
       The Card is module-designer's to write or revise. The dispatcher should
       be told this capability's meaning changed; that is not decided here.
+
+      ## Where the endpoints come from, and what happens after the choice
+
+      OWNER DECISION 2026-10-02: two mainnet endpoints, recorded by environment
+      variable name in architecture/project.yaml -> rpc_endpoints
+      (ROBINHOOD_OFFICIAL_RPC_URL and ROBINHOOD_MAINNET_RPC_URL), and failover
+      whose shape is "the probe picks the healthy one". The urls themselves are
+      configuration and carry API keys, so no url, hostname or key fragment
+      appears in this contract or in any tracked file.
+
+      **This capability is the measurement, and the selection it feeds happens
+      OUTSIDE this contract.** The signature takes `urls: list[str]`, so the
+      list arrives from the caller: the composition root resolves the two
+      variable names to urls and hands the list here. This capability probes
+      each and reports each. It does not choose, and adding a "pick one" step to
+      it would be a second decision living in the capability that measures the
+      inputs to that decision. The choice is made when the root constructs the
+      adapter instance — which is what `robinhood-application` already declares
+      itself to be the only place to do.
+
+      **After the choice the capability layer does not know which host is
+      serving, and does not switch between requests.** `rpc.adapter.logs`,
+      `rpc.adapter.block_header` and `rpc.adapter.call` take no endpoint
+      parameter, so the endpoint is a property of the instance they were called
+      on, fixed at construction. A failure is reported as a failure, against
+      that endpoint.
+
+      **Two endpoints does not mean runtime switching, and this contract does
+      not promise any.** No clause here says a request moves to the other host
+      on error, and a Card that reads "failover" into existence is reading
+      something the contract does not say. The honest reason the promise is
+      absent is that nothing has measured the second endpoint yet, so a policy
+      for choosing between two unmeasured hosts would be a policy with nothing
+      to choose on. If the Owner wants switching, it is a contract change with
+      its own clause: which errors move, whether a partial result is returned,
+      and whether a caller can learn which host answered.
+
+      **The two endpoints are not interchangeable, and nothing here may assume
+      they are.** Every measurement in this repository comes from the official
+      one. The other endpoint's log cap, range cap, state window, rate limits
+      and — as of writing — its chain id are UNKNOWN, recorded as such in
+      project.yaml -> rpc_endpoints. A public hosted node is commonly more
+      restrictive than a project's own, and a number measured on one endpoint
+      says nothing about the other. That gap is the reason this capability
+      exists; it is not a reason to assume the two behave alike, and the
+      two-window reporting rule above is the concrete case where they are most
+      likely to differ.

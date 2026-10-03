@@ -1,8 +1,19 @@
 name: robinhood-rpc
 description: >
-  Bounded JSON-RPC adapter (T020). Exposes only the closed method set
-  eth_blockNumber, eth_getBlockByNumber, eth_getLogs,
-  eth_getTransactionReceipt, eth_call, eth_chainId, eth_getCode.
+  Bounded JSON-RPC adapter. Exposes only this closed method set of eight
+  methods, and the same eight appear in robinhood-rpc-api.yaml, which is the
+  other half of one declaration:
+  eth_blockNumber, eth_getBlockByNumber, eth_getBlockByHash, eth_getLogs, eth_getTransactionReceipt, eth_call, eth_chainId, eth_getCode.
+
+  WHY EACH OF THE EIGHT IS HERE is itemised in the contract's description,
+  with the capability that calls it, what it was verified against, and what
+  type it returns. The summary that matters on this side: four of the eight
+  have a calling capability, three do not (eth_blockNumber,
+  eth_getBlockByHash, eth_getCode) and one of those three is justified by a
+  field the data already carries, while eth_getTransactionReceipt has no
+  capability, no consumer and no type. Three of the four undocumented ones
+  were read against this chain on 2026-10-02; eth_getCode was not, and is the
+  weakest item in the set.
   Endpoint failover, classified retries, adaptive range splitting,
   capability probing, redacted metrics.
 
@@ -13,10 +24,20 @@ provides_contracts:
 depends_on:
   - contract: robinhood-protocol-api
     uses:
-      - protocol.pool_key.parse
       - protocol.identity.chain_id.parse
       - protocol.identity.address.parse
-    reason: validate the chain_id, contract address and topic filter the caller supplied before issuing the JSON-RPC call
+    reason: >
+      validate the chain_id and the contract address the caller supplied before
+      issuing the JSON-RPC call.
+      `protocol.pool_key.parse` was removed from this list on 2026-10-02 and
+      the reason it went is worth keeping. No capability of this contract takes
+      a PoolKey: `rpc.adapter.call` takes an Address and opaque bytes, and
+      `TopicFilter` carries a pool_id — a 32-byte hash, which is a derived
+      value and not a struct this module would parse. The entry justified
+      itself with "validate ... the topic filter the caller supplied", and a
+      hash cannot be validated into a PoolKey. An itemised uses entry with no
+      capability behind it is a claim, and the fix for a claim that turned out
+      to be false is to remove it, not to keep it warm.
 
 # Contract read surface. A cross-module dependency needs BOTH halves: the
 # `depends_on` entry above, which says what is used and why, and these

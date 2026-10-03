@@ -27,12 +27,13 @@
        one url, `eth_chainId` returns a hex QUANTITY, decoded to the declared
        `robinhood-protocol-api.ChainId`. Verified against the live endpoint:
        `0x1237` = 4663 on `https://rpc.mainnet.chain.robinhood.com`.
-   - boundary: >
+  - boundary: >
        a url that is syntactically valid but answers on another chain returns
-       `RPC_CHAIN_ID_MISMATCH`, not a value. The testnet endpoint
-       `https://rpc.testnet.chain.robinhood.com` answers `0xb626` = 46630 and is
-       the natural fixture for this — see notes, it is a policy exclusion, not a
-       technical impossibility.
+       `RPC_CHAIN_ID_MISMATCH`, not a value. FIXTURE: a stub transport that
+       answers `{"result": "0xb626"}` for `eth_chainId`. This case used to name
+       a live testnet endpoint and used to insist on not being mocked; Owner
+       decision 2026-10-02 retired the testnet chain, and the notes record the
+       downgrade and why it costs this test nothing.
    - invalid: >
        the contract declares `url: str` with no validation rule, so an empty
        string and a non-URL string are both in scope for the tester. Expected
@@ -85,11 +86,18 @@
 
   ### Not verified — the tester must not treat these as known
 
-  - **Whether more than one endpoint exists.** Only the one above is
-    established anywhere in this repository. The signature takes a single `url`,
-    so this capability is unaffected — but `capability_probe` takes
-    `urls: list[str]` and cannot be written until the Owner says where a list
-    comes from.
+  - **Which endpoints exist.** Settled by Owner decision on 2026-10-02: two
+    mainnet endpoints, recorded by environment variable name in
+    `architecture/project.yaml` -> `rpc_endpoints`. The values live in `.env`
+    and carry API keys, so the tester reads them from there; nothing tracked in
+    this repository names a url for the second one, and none should. This
+    capability takes a single `url` and is unaffected either way.
+  - **What the second endpoint can do.** UNKNOWN, and no amount of reading this
+    Card establishes it: no cap, no window, no rate limit, not even a chain id
+    has been measured on `ROBINHOOD_MAINNET_RPC_URL`. Every number in this
+    repository belongs to the official endpoint. `capability_probe` is the
+    capability that settles it, and its Card has to probe both variables rather
+    than carry a number across.
   - **The error codes above are mine, not the contract's.** The contract declares
     no `errors:` block for any `rpc.adapter.*` capability. I chose these four to
     cover the failure modes actually observed. The Owner should confirm the
@@ -105,16 +113,49 @@
   something this Card papers over — recorded rather than filled with an invented
   `EndpointUrl` type.
 
-  ### Chain 46630 is a policy exclusion, and this Card is where it could leak
+  ### This test was a live-endpoint test until 2026-10-02, and is not any more
 
-  The testnet endpoint answers and returns 46630. `architecture/project.yaml`
-  records that "mainnet only" is a POLICY, and names
-  `protocol.identity.chain_id.parse` as the place a testnet connection would
-  enter the system — because it accepts an arbitrary chain id string by design.
-  This capability is a second such door: it returns a `ChainId` straight from
-  whatever endpoint it is handed. The `RPC_CHAIN_ID_MISMATCH` error is what stops
-  46630 becoming a live value downstream, so it must actually be implemented and
-  must be tested with the real testnet endpoint, not a mock.
+  Recorded rather than quietly rewritten, because a test plan that changed
+  without a trace is the shape this repository has already retired things for.
+
+  Until Owner decision 「testnet 彻底删除」 on 2026-10-02, the boundary case
+  named `https://rpc.testnet.chain.robinhood.com` — which answers `0xb626` =
+  46630 — and this Card claimed the test "must be tested with the real testnet
+  endpoint, not a mock". The chain id and the endpoint left
+  `architecture/project.yaml` that day, and the claim went with its object: a
+  test that needs an endpoint nobody may dial is not a test, it is an outage
+  waiting to be reported as a defect.
+
+  The fixture is now a stub transport answering `{"result": "0xb626"}`. The
+  downgrade costs this test nothing, and the reason is worth keeping:
+
+  - What this case guards is the adapter's comparison: given an endpoint that
+    answers but is not this chain, raise rather than return. `0xb626` IS what a
+    real different-chain endpoint returns, so the fixture value is the real
+    one, and the only parts of the path it does not exercise are the adapter's
+    own hex parse and integer compare — which are the parts under test.
+  - A live endpoint welds the assertion to reachability, key validity, chain
+    liveness and rate-limit state. Any one of those failing produces a failure
+    that is about the network, and a tester cannot tell it from a real defect.
+  - The conversion is arithmetic. `0xb626` = 46630 and `0x1237` = 4663 need no
+    chain to confirm, and the expected side is already established in
+    `project.yaml`.
+
+  What the tester gives up is confirmation that a real node's mismatch response
+  parses into the adapter's error path. If that is wanted back, the cheap form
+  is one manual probe of a real endpoint with the response shape recorded in
+  `project.yaml` — a fact recorded once, rather than a dependency the suite
+  carries on every run.
+
+  ### The chain-id door is still a door, and deleting the constant did not close it
+
+  `protocol.identity.chain_id.parse` accepts an arbitrary ChainId string by
+  design; it is a parser, and refusing chains is not its job. This capability is
+  the second such door: the endpoint is a parameter, so its answer is unverified
+  input. `RPC_CHAIN_ID_MISMATCH` is what stops a wrong chain becoming a live
+  value downstream, so it has to be implemented and tested for real — which the
+  boundary case above now does, without a network. The rewritten paragraph in
+  `project.yaml` says the same thing about the same two functions.
 
   ### No consumers yet
 

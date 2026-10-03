@@ -48,11 +48,23 @@ def cited_identifiers() -> dict[str, set[str]]:
 
 
 class CitedIdentifiersTests(unittest.TestCase):
-    # 35 identifiers, none of which resolve against anything in this
+    # 41 identifiers, none of which resolve against anything in this
     # repository. Recorded so that ADDING one fails this test, and so that
     # removing one is a visible, deliberate edit.
+    #
+    # `T020` was retired on 2026-10-02. Its last two citations were both the
+    # one-sentence summary of the closed JSON-RPC method set -- one in
+    # robinhood-rpc-api.yaml, one in robinhood-rpc/module.yaml -- and both
+    # were replaced when that set was rewritten with the method named by
+    # `who` and `basis` for each entry. `T020` points at a task document
+    # this repository does not contain, so there was nothing to update the
+    # citation to; a rewrite that drops the sentence drops the citation with
+    # it. `test_the_ratchet_list_is_not_stale` is what surfaced the removal
+    # -- it reported T020 as listed but uncited -- and dropping the entry is
+    # the deliberate edit that test asks for. Nothing else was removed: the
+    # other 41 are each still cited by a live declaration.
     UNRESOLVED = {
-        "T020", "T024", "T031", "T032", "T033", "T037", "T040", "T041",
+        "T024", "T031", "T032", "T033", "T037", "T040", "T041",
         "T042", "T049", "T050", "T051", "T052", "T053", "T060", "T061",
         "T068", "T070", "T071", "T072", "T073", "T087", "T088", "T090",
         "T094", "T097", "T100", "T101", "T102", "T103", "T104", "T109",

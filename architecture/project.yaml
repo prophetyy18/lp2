@@ -11,8 +11,16 @@
 # the contract YAML (which would have had the loader enforce it) and rather
 # than in a contract `description:` (which is prose nothing checks).
 #
+# OWNER DECISION 2026-10-02: 「testnet 彻底删除」. The testnet chain id, the
+# testnet endpoint and the testnet verification entry are gone from this file
+# rather than commented out, and so is the paragraph that argued "mainnet only
+# is a POLICY, not a technical impossibility" — its premise was that a
+# reachable testnet exists to be dialled, and that premise is now false. The
+# replacement further down names the same risk by the two functions that could
+# carry it, which is the part of the old paragraph that was worth keeping.
+#
 # HONEST LIMITATION: nothing validates this file. `framework.architecture.cli
-# validate` does not read it, and a contract that names a testnet chain id
+# validate` does not read it, and a contract that names any other chain id
 # would still pass validation. This is the accepted cost of keeping the
 # framework independent. If that trade turns out wrong, the fix is a
 # `chain_scope:` key plus a loader check — not a paragraph in a contract.
@@ -20,10 +28,13 @@
 chain_scope:
   - 4663            # Robinhood Chain mainnet, 0x1237
 
-# Not in scope. Recorded so that a later reader can tell "deliberately
-# excluded" from "never considered".
-excluded_chains:
-  - 46630           # Robinhood Chain testnet, 0xb626
+# Empty, and left as a key rather than deleted so a later reader can tell
+# "deliberately empty" from "nobody has thought about it". The testnet entry
+# that used to be here was retired by Owner decision on 2026-10-02; the chain
+# id itself went with it rather than surviving as a commented-out value,
+# because a value that lives in a comment is one the next reader treats as a
+# fixture.
+excluded_chains: []
 
 # Per AGENTS.md §4, a mutable fact needs coordinates, not a link. Re-verify
 # before citing; a head block number is a record of *when* this was read, not
@@ -36,22 +47,22 @@ verification:
     endpoint: https://rpc.mainnet.chain.robinhood.com
     retrieved_at: 2026-09-29T04:22:37Z
     head_block: "0x47e02c7"
-  - fact: Robinhood Chain testnet chain id = 46630 (0xb626)
-    method: eth_chainId
-    endpoint: https://rpc.testnet.chain.robinhood.com
-    retrieved_at: 2026-09-29T04:22:37Z
-    head_block: "0x782b377"
 
-# Both endpoints answered on the retrieval date above. Testnet being reachable
-# means "mainnet only" is a POLICY, not a technical impossibility — nothing will
-# stop code from dialling 46630 unless that policy is enforced somewhere. Today
-# the only runtime leak is `protocol.identity.chain_id.parse`, which accepts an
-# arbitrary ChainId string by design. Treat that as the place to check first if
-# a testnet connection is ever observed.
+# 4663 is the only chain id in this repository, and the risk that used to be
+# written about is not gone: it changed shape. Deleting the testnet constant
+# removes a fixture, not a door. Two functions can still carry a chain id the
+# system did not intend, and both are doors by design rather than by accident:
 #
-# No testnet deployment of Uniswap V4 is published for 46630 either, so
-# "mainnet only" and "there is a V4 to talk to" happen to agree. They are
-# still separate claims and should stay separate.
+#   - `protocol.identity.chain_id.parse` accepts an arbitrary ChainId string.
+#     It is a parser; refusing chains is not its job.
+#   - `rpc.adapter.chain_id` returns whatever the endpoint it was handed
+#     answers. The endpoint is a parameter, so its answer is unverified input.
+#
+# What stops a wrong chain is the comparison against the expected one — the
+# `RPC_CHAIN_ID_MISMATCH` that `rpc.adapter.chain_id` raises — and not the
+# absence of a second number to compare against. A tester reading this file
+# should treat those two functions as the places to check first, exactly as
+# before, and should not read the deletion above as a fix for either.
 
 # ---------------------------------------------------------------------------
 # The Uniswap V4 deployment this system reads.
@@ -140,6 +151,58 @@ contracts:
           common, and its absence from a sample is a fact about the sample.
 
 # ---------------------------------------------------------------------------
+# The two RPC endpoints. Variable names only, no URLs, no keys.
+#
+# OWNER DECISION 2026-10-02: two mainnet endpoints. Their values live in
+# `.env`, which is gitignored, and both carry API keys. NO URL, no hostname and
+# no key fragment enters this file or any other tracked file — a credential is
+# exposed by the push, not by the commit, and the person who exposes it is the
+# one who did not read this comment. Someone who needs the value reads `.env`;
+# someone who needs to know WHICH value is which reads the name below.
+#
+# The variable names are the fact being recorded. The urls are configuration,
+# and configuration that gets rotated belongs in an environment file.
+# ---------------------------------------------------------------------------
+rpc_endpoints:
+  - variable: ROBINHOOD_OFFICIAL_RPC_URL
+    role: the project's own node
+    established: >
+      Every read recorded in this file, and the only endpoint any number in
+      this file was measured on. Read 2026-09-29 and 2026-09-30; last re-read
+      2026-10-02 for the block and log object facts.
+    measured: >
+      Chain id 4663. eth_getLogs caps at 10000 results, and at a 30000-block
+      range with no address filter and 10000000 with one. Historical state
+      served to roughly head-6000 on a rolling edge. Headers served at
+      head-20000000. Logs served from head-1000000. HTTP-level 429 under rapid
+      bursts, needing ~3-5s of pacing.
+  - variable: ROBINHOOD_MAINNET_RPC_URL
+    role: a second mainnet endpoint, held for redundancy
+    chain_id: UNKNOWN
+    measured: >
+      NOTHING. Not `eth_chainId`, not a cap, not a window, not a rate limit.
+      No read of any kind has been made against this endpoint from this
+      repository, so this entry records an intention and not an observation.
+    unknown: >
+      Chain id included. The variable name says mainnet, and a name is metadata:
+      AGENTS.md §4 is explicit that a friendly name is not evidence about the
+      underlying thing. So 4663 is an ASSUMPTION here and is written as UNKNOWN
+      rather than copied across from the entry above.
+
+      Also unknown, and the reason this endpoint is being added: whether its
+      limits match the official one. A public hosted node is commonly MORE
+      restrictive — lower log caps, tighter ranges, shorter state retention,
+      stricter rate limits — and nothing here establishes that it is, or that
+      it is not. A number measured on one endpoint says nothing about the
+      other. That is what `rpc.adapter.capability_probe` exists to settle, and
+      it is why that capability reports the state window and the log window as
+      two numbers rather than one: the two are the pair most likely to differ
+      between a project's own node and a hosted one.
+    next_step: >
+      Probe it. Until `capability_probe` has run against both variables, the
+      second endpoint is a configured url with no measured behaviour behind it,
+      and the redundancy it appears to provide is a claim rather than a fact.
+# ---------------------------------------------------------------------------
 # What the RPC endpoint will and will not answer, measured.
 #
 # These live here rather than in the contract because they are facts about ONE
@@ -149,6 +212,97 @@ contracts:
 # measure the number at runtime.
 # ---------------------------------------------------------------------------
 endpoint_facts:
+  - fact: eth_getBlockByHash is available on this chain
+    method: eth_getBlockByHash, with `false` for the transactions argument
+    endpoint: https://rpc.mainnet.chain.robinhood.com
+    chain_id: 4663
+    block: "0x48ad6c0"
+    retrieved_at: 2026-10-02
+    result: >
+      `eth_getBlockByHash("0x4abf12ccb5508f3e3d862c420e4cfd9db7153ff8a7d724ee1203664861133b66", false)`
+      answered, returning number 0x48ad6c0 and that same hash. The block
+      number is the one independently established by
+      eth_getBlockByNumber, so the two methods corroborate each other rather
+      than the endpoint merely accepting a string. The object carries the same
+      23 fields as eth_getBlockByNumber, the same six-element non-hydrated
+      `transactions` array, and the same absence of `totalDifficulty`.
+
+      Read on 2026-10-02 by ac-designer, who had been told this method did not
+      exist. It did; the earlier claim came from `grep` finding no mention of
+      it in this repository, which is evidence about this repository and not
+      about the chain. AGENTS.md §4 in the form that actually bites.
+
+      Argument shape, also measured: the second argument is a bool and only a
+      bool. Passing a block tag gives -32602 "invalid argument 1: json: cannot
+      unmarshal string into Go value of type bool", so the EIP-1898
+      `(hash, blockTag)` form is NOT implemented here. A caller wanting a
+      pinned read has nothing to pin to and must supply `false`.
+  - fact: eth_getTransactionReceipt is available, serves old receipts, and takes no block pin
+    method: eth_getTransactionReceipt, one argument
+    endpoint: https://rpc.mainnet.chain.robinhood.com
+    chain_id: 4663
+    block: "0x4aac83b"
+    retrieved_at: 2026-10-02
+    result: >
+      Two independent reads, both against the official endpoint.
+
+      Head 0x4aac83c, pinned block 0x4aac83b, first transaction
+      0x3a4091d8297ee2ad081e467ed704aeab2b416a8f64ff872fa067622c599c05dc.
+      `eth_getTransactionReceipt` on it answered with blockNumber 0x4aac83b —
+      the pinned height — and sixteen fields:
+      blockHash, blockNumber, contractAddress, cumulativeGasUsed,
+      effectiveGasPrice, from, gasUsed, gasUsedForL1, l1BlockNumber, logs,
+      logsBloom, status, to, transactionHash, transactionIndex, type.
+      `l1BlockNumber` 0x18e5589 and `gasUsedForL1` 0x0; both are absent from
+      the Ethereum JSON-RPC receipt object. An earlier read the same day, at
+      block 0x4800b65 on transaction
+      0xe085c9c7e4dd89d340005bfe4d58d0c511bab9913bffe55899f09935173cfe14,
+      gave the same sixteen fields with `l1BlockNumber` 0x18dfa19 and
+      `gasUsedForL1` 0x61c — the same two extras, with values that differ, so
+      neither is a constant. This independently confirms the "Receipt object
+      extras" row in docs/implement/robinhood-rpc/PLAN.md, which had not been
+      re-checked since it was recorded.
+
+      THE LIMITING FACT, and the one that decides whether a receipt capability
+      is implementable: this method takes ONE argument. A second argument is
+      refused whatever it is — a block number, or the EIP-1898 object
+      `{"blockHash": ...}` — with -32602 "too many arguments, want at most 1".
+      Note that the refusal arrives as an HTTP 200 carrying a JSON-RPC error
+      object, so a client that checks only the HTTP status sees a success.
+
+      WHAT THAT DOES AND DOES NOT RULE OUT. It rules out PINNING: a caller
+      cannot ask for a receipt as of a stated block, so the result carries no
+      block argument and the adapter cannot promise that what it returns
+      describes the block the caller had in mind. It does NOT rule out
+      historical reads: a receipt for a transaction 50000 blocks back
+      (0x4aa0564) was served without complaint on the same day. So the shape
+      of the limitation is not "receipts are tip-only" — an earlier version of
+      this entry said that, and the 50000-block read refutes it — but "a
+      receipt read carries no block pin, while every other read in
+      robinhood-rpc-api is addressed by one." Whether a receipt capability is
+      implementable for V1 given that is the Owner's call, not this file's.
+  - fact: this endpoint refuses a User-Agent beginning with the exact string `Python-urllib`
+    method: eth_chainId, identical request, six User-Agent values
+    endpoint: https://rpc.mainnet.chain.robinhood.com
+    chain_id: 4663
+    retrieved_at: 2026-10-02
+    result: >
+      HTTP 403 with body `error code: 1010` for `Python-urllib/3.12`,
+      `Python-urllib/3.11` and `Python-urllib`. HTTP 200 for an EMPTY
+      User-Agent, and for `curl/8.5.0`, `python-requests/2.31`,
+      `Mozilla/5.0`, `node-fetch/1.0` and a custom string. The matching is on
+      exact capitalisation: `python-urllib/3.12` with a lower-case p answers
+      200, `Python-urllib` does not.
+
+      So the rule is NOT "send a User-Agent" — an absent one is fine. The rule
+      is "do not send Python's default urllib User-Agent", which is a
+      bot-string list matching on prefix. A client using `requests` is
+      unaffected; a client using `urllib.request` without overriding the
+      header gets a 403 that looks exactly like a network fault and would
+      otherwise be misread as one. The 403 arrives before any JSON-RPC
+      processing, so there is no `error` object to classify it by — the adapter
+      has to read the HTTP status first, and RPC_ENDPOINT_UNREACHABLE is where
+      it belongs.
   - fact: eth_call cannot serve a `finalized` block on this endpoint
     method: eth_call at tag `finalized`, owner() as the call
     endpoint: https://rpc.mainnet.chain.robinhood.com
@@ -204,3 +358,53 @@ endpoint_facts:
       result-count limit and not a retention limit, so it says nothing about
       how far back Swap goes either way.
 
+  - fact: the block object carries four fields the Ethereum JSON-RPC block object does not, and no totalDifficulty
+    method: eth_getBlockByNumber, non-hydrated, at two named blocks
+    endpoint: https://rpc.mainnet.chain.robinhood.com
+    chain_id: 4663
+    block: "0x48ad6c0"
+    second_block: "0x4a4c810"
+    retrieved_at: 2026-10-02
+    result: >
+      `baseFeePerGas` 0x172d980, `l1BlockNumber` 0x18e1128, `sendCount` 0xb37,
+      `sendRoot` 0xd85d55b464c9971287a5d516a3ddb19635a27e3b0592f41c5fa44331de32b70a,
+      all four present; `totalDifficulty` absent from the object at both
+      blocks. A strict decoder written against the Ethereum spec throws on a
+      real response from this chain, on the four extras and on the missing
+      field together. `sendRoot` equalled `extraData` at 0x48ad6c0; whether
+      that is a fact or a coincidence of one block is NOT established. The
+      meaning of `l1BlockNumber`, `sendCount` and `sendRoot` is UNKNOWN in this
+      repository — no document here defines them, and a guessed meaning would
+      be inherited by every Card written from it. Full field list at
+      0x48ad6c0: baseFeePerGas, difficulty, extraData, gasLimit, gasUsed, hash,
+      l1BlockNumber, logsBloom, miner, mixHash, nonce, number, parentHash,
+      receiptsRoot, sendCount, sendRoot, sha3Uncles, size, stateRoot,
+      timestamp, transactions, transactionsRoot, uncles. `transactions` was an
+      array of six hashes, confirming non-hydrated. These observations were
+      taken by ac-designer on 2026-10-02 while declaring
+      `architecture/schemas/robinhood-rpc-api.yaml`; they are the coordinates
+      that file cites.
+  - fact: the log object carries a blockTimestamp that reads zero
+    method: eth_getLogs, two ranges, every record inspected
+    endpoint: https://rpc.mainnet.chain.robinhood.com
+    chain_id: 4663
+    block: "0x4a4ca04"
+    second_range_from: "0x4800000"
+    second_range_to: "0x4810000"
+    retrieved_at: 2026-10-02
+    result: >
+      `blockTimestamp` is present on the log object — it is not in the Ethereum
+      JSON-RPC log object — and it read "0x0" on all 1351 records inspected:
+      1067 records over 0x4a4c810..0x4a4ca04, and 284 over
+      0x4800000..0x4810000 under a ProtocolFeeUpdated topic0 filter. The two
+      ranges are about 2.6 million blocks apart. The containing block's own
+      `timestamp` at 0x4a4c810 read 0x6abf2393, so the zero is not a block
+      with no clock. Every record carried exactly these ten fields: address,
+      topics, data, blockNumber, transactionHash, transactionIndex, blockHash,
+      blockTimestamp, logIndex, removed. `removed` read false in all 1351.
+      OWNER DECISION 2026-10-02: a field that is always zero is not data, so
+      `blockTimestamp` is not in `LogRecord`; time comes from
+      `BlockHeader.timestamp`, addressed by a log's `block_number`. Observed
+      topic counts: 2 for ProtocolFeeUpdated, 3 for Swap and ModifyLiquidity,
+      4 for Initialize. Donate returned no logs in either range, which is why
+      `LogRecord.topics` declares no maximum.
