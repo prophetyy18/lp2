@@ -7,9 +7,10 @@ constraints that hold regardless — module isolation, external facts, the
 interpreter, the authority order — are in `AGENTS.md`, imported above. They are
 not repeated below; a rule stated in both files is a rule that will drift.
 
-**State of the architecture: nothing is declared.** `architecture/contracts/`,
-`architecture/modules/` and `architecture/schemas/` are empty, so every command
-below answers about an empty architecture and `validate` passes vacuously.
+**State of the architecture: nothing is declared.** The directories
+`architecture/contracts/` and `architecture/modules/` do not exist, and
+`architecture/schemas/` holds only its README, so every command below answers
+about an empty architecture and `validate` passes vacuously.
 This is deliberate as of 2026-10-03, not a broken checkout. The twelve
 `robinhood-*` modules that used to be here were mapped in from a different
 repository, had no implementation, and cited 35 task numbers that resolve to

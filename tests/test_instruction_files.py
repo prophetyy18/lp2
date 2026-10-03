@@ -62,6 +62,22 @@ def _lines(path: Path) -> set[str]:
 class PartitionTests(unittest.TestCase):
     """The two instruction files are partitioned by subject, not overlapping."""
 
+    # Paths named to describe where architecture GOES, not what is there.
+    #
+    # The instruction files rank `architecture/contracts/` above everything
+    # else and tell ac-designer which directories it edits. Both statements
+    # stay true while the directories are absent, because neither claims a
+    # file lives at that path today. They are listed rather than worked around
+    # so that adding a pointer of any other kind is still a failure.
+    #
+    # Creating the directories to satisfy the check would be the wrong repair.
+    # An empty tracked directory cannot exist in git, so the only way to make
+    # the path resolve is a placeholder file — and that makes the absence
+    # resolve, which is precisely the wrong signal: a reader finding
+    # `architecture/contracts/` present concludes the architecture was
+    # considered and produced this, rather than that nothing is declared yet.
+    NOT_YET_DECLARED = {"architecture/contracts/", "architecture/modules/"}
+
     def test_no_long_line_appears_in_both_instruction_files(self) -> None:
         shared = _lines(CLAUDE_MD) & _lines(AGENTS_MD)
         self.assertEqual(
@@ -169,7 +185,7 @@ class PartitionTests(unittest.TestCase):
             for ref in sorted(set(re.findall(r"`((?:architecture|framework|tools|"
                                              r"docs|modules|\.claude)/[A-Za-z0-9_./*-]+)`",
                                              path.read_text(encoding="utf-8")))):
-                if "*" in ref:
+                if "*" in ref or ref in self.NOT_YET_DECLARED:
                     continue
                 with self.subTest(file=path.name, ref=ref):
                     self.assertTrue((ROOT / ref).exists(), f"{path.name} names {ref}")

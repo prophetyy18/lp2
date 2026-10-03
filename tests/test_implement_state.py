@@ -1733,7 +1733,9 @@ class CrossModuleGateTests(unittest.TestCase):
 
     What is lost is the accidental check that the real declarations are
     self-consistent. That question is real and it is asked on purpose, of the
-    real tree, by `RealArchitectureEdgeTests` at the foot of this file.
+    real tree, by `DeclaredEdgesAgreeTests` in
+    `tests/test_declared_edges_agree.py` — a separate file, not a class at the
+    foot of this one.
     """
 
     # A provider whose capability ids do NOT begin with the module name, which

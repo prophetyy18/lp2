@@ -258,7 +258,7 @@ the tooling runs on.
 When sources conflict, use this order:
 
   1. `architecture/contracts/*.yaml` + `architecture/modules/*/module.yaml`
-     — public surface, single source of truth
+     — public surface, single source of truth. None declared yet (`CLAUDE.md`)
   2. `.claude/agents/<role>.md` — role behavior, hard rules per role
   3. `tools/implement/state.py` + `tools/implement/scope.py` +
      `tools/check_imports/scan.py` — enforcement

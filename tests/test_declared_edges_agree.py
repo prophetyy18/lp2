@@ -34,6 +34,20 @@ state, and that is the correct answer.
 by accident, by asserting on the live declarations as a side effect of testing
 the state machine. That coupling is gone — one architecture edit broke four
 tests whose subject was the gate — and these are where the coverage went.
+
+**These tests currently assert nothing.** The architecture was withdrawn on
+2026-10-03, so `arch.modules` and `arch.contracts` are both empty and every
+test here iterates nothing and passes. That is the same shape as the defect
+`RealArchitectureTests.OPEN_SCHEMA_REFS` had — a check that reports success
+because the subject it was checking no longer exists — and it is recorded
+here rather than left for the next reader to assume otherwise.
+
+They stay because the alternative is worse. A fixture proves the checker runs
+and nothing else, which is what the fixtures in `test_layer_direction.py`
+already do; the first real `depends_on` to be declared needs this coverage
+more than it needs a passing suite today. The honest summary is: three green
+lines that assert nothing, in exchange for a check that will bite the moment
+it has something to bite on.
 """
 
 from __future__ import annotations
