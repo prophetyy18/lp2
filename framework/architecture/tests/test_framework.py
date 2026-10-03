@@ -345,26 +345,18 @@ class SnapshotDiffTests(TempArchTest):
 class RealArchitectureTests(unittest.TestCase):
     # Schema references this repository has not resolved yet.
     #
-    # These six are a ratchet, not a baseline to grow into. Each one is a
-    # capability pointing at a type whose fields nobody has decided, and each
-    # is recorded here so that ADDING one fails this test while REMOVING one
-    # shows up as a deletion someone has to make on purpose. A plain
-    # `assertTrue(report["ok"])` would fail on all six forever and teach
-    # everyone to ignore it; suppressing the schema codes instead would hide
-    # the next one too.
+    # A ratchet in BOTH directions. It was originally one-way —
+    # `open_now - OPEN_SCHEMA_REFS == set()` — which meant that deleting every
+    # dangling reference emptied the set and the test passed while printing
+    # "6/6 resolved": the six disappeared because the capabilities naming
+    # them were withdrawn, and the test counted that as progress. A one-way
+    # ratchet cannot tell "someone fixed this" from "the thing citing it is
+    # gone", and only the second is not a repair.
     #
-    # The three signing types and SizingRequest/SizingDecision are design
-    # decisions, not omissions — what gets signed, and with which key, is a
-    # security property. RiskFactorList is a vocabulary whose members have
-    # never been enumerated.
-    OPEN_SCHEMA_REFS = {
-        "robinhood-protocol-api.SizingDecision",
-        "robinhood-protocol-api.SizingRequest",
-        "robinhood-risk-api.RiskFactorList",
-        "robinhood-signer-api.LockStateRequest",
-        "robinhood-signer-api.SignRequest",
-        "robinhood-signer-api.SignedTransaction",
-    }
+    # So the set must EQUAL the open set, and removing an entry has to be a
+    # deletion somebody makes on purpose. It is empty as of 2026-10-03, when
+    # the twelve robinhood-* modules were withdrawn.
+    OPEN_SCHEMA_REFS: set[str] = set()
 
     def test_repo_architecture_is_valid(self) -> None:
         arch = load_real()
@@ -376,24 +368,29 @@ class RealArchitectureTests(unittest.TestCase):
         ]
         self.assertEqual(blocking, [], "non-schema errors in the real architecture")
 
-    def test_no_new_unresolved_schema_reference(self) -> None:
+    def test_no_unresolved_schema_reference_outside_the_ratchet(self) -> None:
         arch = load_real()
         open_now = {
             f.context["schema"]
             for f in validator.validate(arch)
             if f.code == SCHEMA_DANGLING
         }
+        # Both directions. A reference that is no longer open must be deleted
+        # from OPEN_SCHEMA_REFS in the same change, or the ratchet records a
+        # debt that stopped being owed.
         self.assertEqual(
             open_now - self.OPEN_SCHEMA_REFS,
             set(),
             "a capability now references a schema that does not exist",
         )
-        # Reported, not asserted away: this list should shrink, and how far it
-        # has is a fact about the architecture rather than about the test.
-        print(
-            f"\n  {len(self.OPEN_SCHEMA_REFS - open_now)}/{len(self.OPEN_SCHEMA_REFS)} "
-            f"schema references resolved; {len(open_now)} still open"
+        self.assertEqual(
+            self.OPEN_SCHEMA_REFS - open_now,
+            set(),
+            "OPEN_SCHEMA_REFS lists a reference that is no longer dangling; "
+            "delete it on purpose — its capability may simply be gone, which "
+            "is not the same as the schema having been written",
         )
+        print(f"\n  {len(open_now)} schema references still open")
 
     def test_every_module_declares_capabilities_it_uses(self) -> None:
         arch = load_real()

@@ -28,10 +28,12 @@ Then ask what would make it true, and whether that thing exists. Signer
 justified itself with live execution; live execution needs a broadcaster, and
 no contract declares one — so the hole was one level down.
 
-**This is not a style note.** Three retirements in this repository were this
+**This is not a style note.** Four retirements in this repository were this
 one shape — `Bar` inheriting a shape from a capability with zero consumers, the
-whole `market-data` contract, and 35 borrowed task numbers. None of them
-tripped a tool, because none of them changed anything.
+whole `market-data` contract, 35 borrowed task numbers, and (2026-10-03) the
+twelve `robinhood-*` modules, which had been mapped in from a different
+repository and carried zero implementation. None of them tripped a tool,
+because none of them changed anything.
 
 Full method, worked examples, and why each step cannot be automated (step 2
 misses 97% of healthy dependencies, structurally): `docs/design/DECLARATION-PROVENANCE.md`.

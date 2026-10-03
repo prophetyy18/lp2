@@ -3,8 +3,16 @@
 `architecture/schemas/<contract>.yaml` holds the shape of every type that
 contract's capabilities name. The file name is the owning contract; the top
 level maps a `TypeName` to a JSON Schema (draft 2020-12). So a type declared
-in `robinhood-protocol-api.yaml` as `PoolKey` is referenced from anywhere as
-`robinhood-protocol-api.PoolKey`.
+in `example-api.yaml` as `PoolKey` is referenced from anywhere as
+`example-api.PoolKey`.
+
+**This directory is currently empty of schemas.** The three that were here
+(`robinhood-rpc-api`, `robinhood-protocol-api`, `robinhood-signer-api`) were
+withdrawn on 2026-10-03 with the modules they described; see
+`CLAUDE.md` for why. The examples below use invented contract names, so that
+nothing here points at a file that does not exist — a syntax example that
+names a real-looking but absent contract is the same defect in a smaller
+package.
 
 ## Why this directory exists
 
@@ -12,7 +20,7 @@ A capability can name its types two ways, and until this directory existed only
 one of them was even visible to the tooling:
 
 ```yaml
-input:  { schema: robinhood-protocol-api.PoolKey }   # explicit — was never resolved
+input:  { schema: example-api.PoolKey }   # explicit — was never resolved
 signature: "replay.state.checkpoint(c: EventCursor) -> PoolCheckpoint"  # prose
 ```
 

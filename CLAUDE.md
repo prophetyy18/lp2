@@ -7,10 +7,18 @@ constraints that hold regardless — module isolation, external facts, the
 interpreter, the authority order — are in `AGENTS.md`, imported above. They are
 not repeated below; a rule stated in both files is a rule that will drift.
 
-Normal development happens **inside** the architecture that is already
-defined. Do not redesign it while implementing a feature.
+**State of the architecture: nothing is declared.** `architecture/contracts/`,
+`architecture/modules/` and `architecture/schemas/` are empty, so every command
+below answers about an empty architecture and `validate` passes vacuously.
+This is deliberate as of 2026-10-03, not a broken checkout. The twelve
+`robinhood-*` modules that used to be here were mapped in from a different
+repository, had no implementation, and cited 35 task numbers that resolve to
+no task list; they were withdrawn rather than repaired. The measured chain
+reads that survived are in `docs/design/ROBINHOOD-CHAIN-OBSERVATIONS.md`.
 
-The architecture is declared in YAML and is the source of truth:
+So there is nothing to develop inside yet. **Establishing what this repository
+is for comes before the first module**, and that is an Owner decision this
+file cannot make. When declarations do exist they are the source of truth:
 
 - `architecture/contracts/<name>.yaml` — public contracts
 - `architecture/modules/<name>/module.yaml` — modules and their declared dependencies
@@ -87,10 +95,12 @@ recommend entering the Architecture Designer role if the request involves:
 
 The last three survive review unnoticed, because nothing is being changed — a
 contract is simply wrong about the world, duplicated, or borrowed from
-somewhere else, and every Card built on it inherits the error. Three
+somewhere else, and every Card built on it inherits the error. Four
 retirements in this repository were exactly that shape (`Bar`, the whole
-`market-data` contract, 35 borrowed task numbers) and none of them tripped a
-tool. Worked examples are in the method document.
+`market-data` contract, 35 borrowed task numbers, and the twelve
+`robinhood-*` modules, which were mapped in from a different repository on
+2026-10-03 and had zero implementation) and none of them tripped a tool.
+Worked examples are in the method document.
 
 Small, local changes — a new function inside a module, an internal refactor
 that keeps the module's contract and read set unchanged, a bug fix, a new
